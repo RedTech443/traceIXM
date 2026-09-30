@@ -20,7 +20,7 @@ The default `Summary` view correlates:
 - IXM channel number
 - subscriber mailbox login
 - live DTMF digits
-- password-entry DTMF
+- password-entry state and validation result (digits always hidden)
 - custom voice-menu levels
 - DTMF-driven menu transitions
 - mailbox / MbxID correlation
@@ -36,8 +36,8 @@ Example operator-style output:
 ```text
 16:49:29.838 STATUS  CH 1  CALL START   Called=10099  Caller=10000  Name="Einstein, Albert"  RSN=N  MD=1
 16:49:31.398 STATUS  CH 1  AUTH         Requesting password  State=405
-16:49:38.317 STATUS  CH 1  DTMF         Digit=2  Context=Password
-16:49:39.494 STATUS  CH 1  DTMF         Digits=580#  Context=Password
+16:49:38.317 STATUS  CH 1  DTMF         Digits=[HIDDEN]  Context=Password
+16:49:39.494 STATUS  CH 1  DTMF         Digits=[HIDDEN]  Context=Password
 16:49:39.590 STATUS  CH 1  LOGIN OK     Subscriber mailbox login successful  Mailbox=10000  MbxID=91
 16:49:39.757 STATUS  CH 1  MENU         Menu 102/Level1  State=103
 16:49:59.457 STATUS  CH 1  ROUTE        Menu 102/Level1 --[4]--> Menu 102/Level8
@@ -220,7 +220,7 @@ The script is designed for Windows PowerShell 5.1 and avoids several constructs 
 
 ## Installation
 
-Clone the private repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/RedTech443/traceIXM.git
