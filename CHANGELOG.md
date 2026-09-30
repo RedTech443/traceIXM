@@ -1,0 +1,71 @@
+# Changelog
+
+## 1.1.1
+
+- Security change: subscriber password/PIN DTMF is now always hidden.
+- Removed the option to display password/PIN digits.
+- Normal menu DTMF remains visible for call-flow troubleshooting.
+- `Status` and `All` forensic modes redact password-bearing IXM log fields.
+- `-OutputPath` never receives the subscriber password/PIN from parsed trace events.
+- Invalid authentication continues to report `LOGIN FAILED` without exposing the entered password.
+
+## 1.1.0
+
+- Added operator-oriented `CALL START` event in Summary mode.
+- Added per-channel active-call correlation and call duration.
+- Added `CALL END` and reconstructed `CALL PATH` output at Voice Server channel reset.
+- Collapsed repetitive `Custom Menu` state 100/101/102 churn in Summary mode.
+- Added `ROUTE` events that correlate a DTMF choice to the next observed custom-menu level.
+- Added friendly compact menu formatting such as `Menu 102/Level8`.
+- Preserved DTMF buffer continuity across password-request states so cumulative IXM buffers produce only newly entered digits.
+- Improved duplicate Trace state suppression by comparing the original log timestamps rather than parser arrival time.
+- Retained `Status` mode as the forensic/raw evidence view.
+- DTMF/password digits remain visible by default for troubleshooting.
+- `-MaskSensitiveDigits` remains available for redacted output.
+- Continued suppression of unrelated background DBCOM synchronization in Summary unless it correlates to a message seen by the current trace session.
+
+## 1.0.10
+
+- Changed DTMF troubleshooting default to display password-entry digits.
+- Added optional `-MaskSensitiveDigits`.
+- Fixed empty DTMF buffer parser exception.
+
+## 1.0.9
+
+- Added subscriber TUI parsing from the Voice Server STATUS log.
+- Added `AUTH`, `DTMF`, `MENU`, `LOGIN OK`, `LOGIN FAILED`, and `MSG COUNT`.
+- Added custom-menu level detection.
+- Added initial password masking behavior.
+- Suppressed unrelated background external-sync records from Summary.
+
+## 1.0.8
+
+- Added DBCOM live tracing.
+- Added EEAMHELPER `MessageAddInternal` parsing.
+- Added TSECMGR `InternalUpdateSyncStatusOfMessage` parsing.
+- Added numeric IXM MessageID correlation.
+- Added external SyncID handling.
+- Added explicit Graph/SMTP success/failure detection when logged.
+
+## 1.0.7
+
+- Improved duplicate state suppression.
+- Generalized IXM integration-suffix removal.
+- Renamed `EEAM.GetPlayTime` output to `EEAM PLAYTIME`.
+
+## 1.0.6
+
+- Added pending physical-line buffering.
+- Added STATUS/SIP thread-to-channel correlation.
+- Added MWI count parsing.
+- Added `MESSAGE LENGTH` and `VOX LENGTH`.
+- Improved voicemail-save channel correlation.
+
+## 1.0.4
+
+- Reworked the live parser for Windows PowerShell 5.1 compatibility.
+
+## 1.0.1 - 1.0.3
+
+- Initial standalone live-tail implementation.
+- Fixed Windows PowerShell 5.1 FileStream/StreamReader constructor issues.
