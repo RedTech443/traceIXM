@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.2
+
+- Fixed false `CALL END` events caused by treating Voice Server Event 28 / `ResetChannel()` as a session boundary.
+- `CALL END` now uses a correlated SIP `BYE` or `CANCEL`; channel-less disconnects are correlated only when exactly one IXM call is active.
+- Fixed duplicate `IDMS` output immediately following `CALL START`.
+- Improved SIP request detection when IXM prefixes SIP log lines with timestamps/thread information.
+- `CALL PATH` now retains normal menu keypresses that do not change menu levels.
+- When a keypress does cause a level transition, the pending keypress entry is upgraded to a `ROUTE` entry rather than duplicated.
+- Password/PIN digits remain always hidden.
+
 ## 1.1.1
 
 - Security change: subscriber password/PIN DTMF is now always hidden.
