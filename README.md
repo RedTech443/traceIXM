@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.1.1**
+**1.1.2**
 
 PowerShell **5.1+**.
 
@@ -43,8 +43,8 @@ Example operator-style output:
 16:49:59.457 STATUS  CH 1  ROUTE        Menu 102/Level1 --[4]--> Menu 102/Level8
 16:50:03.393 STATUS  CH 1  ROUTE        Menu 102/Level8 --[6]--> Menu 102/Level29
 ...
-16:50:20.000 STATUS  CH 1  CALL END     Duration=50.2 sec  Mailbox=10000
-16:50:20.000 STATUS  CH 1  CALL PATH    10000 -> 10099 | Login mailbox 10000 | Menu 102/Level1 | Menu 102/Level1 --[4]--> Menu 102/Level8 | Menu 102/Level8 --[6]--> Menu 102/Level29
+16:50:20.000 SIP     CH 1  CALL END     Duration=50.2 sec  Mailbox=10000  Reason=BYE
+16:50:20.000 SIP     CH 1  CALL PATH    10000 -> 10099 | Login mailbox 10000 | Menu 102/Level1 | Menu 102/Level1 [1] | Menu 102/Level1 --[4]--> Menu 102/Level8 | Menu 102/Level8 --[6]--> Menu 102/Level29
 ```
 
 The script deliberately does **not** invent friendly labels for undocumented menu levels. A transition such as:
@@ -248,6 +248,7 @@ Then replace the Windows copy of `traceIXM.ps1` with the updated file.
 ## Known behavior / limitations
 
 - Menu numbers and levels are reported exactly as IX Messaging logs them.
+- `CALL END` is finalized only from a correlated SIP `BYE`/`CANCEL`; Voice Server Event 28 is intentionally ignored because it can occur mid-session.
 - Friendly menu-action names are not inferred.
 - Some SIP/MWI events do not contain a channel number and are therefore displayed as `CH --` unless reliable correlation is available.
 - DBCOM synchronization may occur asynchronously after the originating call.
