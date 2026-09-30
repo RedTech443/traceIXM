@@ -75,7 +75,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.1.1'
+$script:TraceIxmVersion = '1.1.2'
 
 $script:TailStates = @{}
 $script:ChannelStates = @{}
@@ -496,6 +496,105 @@ function Add-IxmCallPathItem {
     }
 
     $State.CallPath = @($Existing + $Item)
+}
+
+
+function Replace-IxmLastCallPathItem {
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)][string]$Expected,
+        [Parameter(Mandatory)][string]$Replacement
+    )
+
+    $Items = @($State.CallPath)
+
+    if ($Items.Count -eq 0) {
+        return $false
+    }
+
+    $LastIndex = $Items.Count - 1
+
+    if ($Items[$LastIndex] -ne $Expected) {
+        return $false
+    }
+
+    $Items[$LastIndex] = $Replacement
+    $State.CallPath = @($Items)
+    return $true
+}
+
+function Get-IxmDisconnectChannel {
+    param($ChannelNumber)
+
+    if ($null -ne $ChannelNumber) {
+        return [int]$ChannelNumber
+    }
+
+    # Channel-less SIP disconnects are only correlated when exactly one
+    # traceIXM channel is currently active. Never guess when calls overlap.
+    $Active = @(
+        $script:ChannelStates.Values |
+            Where-Object { $_.CallActive }
+    )
+
+    if ($Active.Count -eq 1) {
+        return [int]$Active[0].Channel
+    }
+
+    return $null
+}
+
+function New-IxmCallEndEvents {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Time,
+        [Parameter(Mandatory)][int]$ChannelNumber,
+        [AllowEmptyString()][string]$Reason,
+        [AllowEmptyString()][string]$Raw
+    )
+
+    $State = Get-ChannelState -ChannelNumber $ChannelNumber
+
+    if (-not $State.CallActive) {
+        return
+    }
+
+    $EndTime = Convert-IxmTimeTextToDateTime -TimeText $Time
+    if ($EndTime -eq [datetime]::MinValue) {
+        $EndTime = Get-Date
+    }
+
+    $DurationSeconds = [math]::Round(($EndTime - $State.CallStartTime).TotalSeconds,1)
+    if ($DurationSeconds -lt 0) {
+        $DurationSeconds = [math]::Round(((Get-Date) - $State.CallStartTime).TotalSeconds,1)
+    }
+
+    $EndDetail = 'Duration={0} sec' -f $DurationSeconds
+    if ($State.Mailbox) {
+        $EndDetail += ('  Mailbox={0}' -f $State.Mailbox)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+        $EndDetail += ('  Reason={0}' -f $Reason)
+    }
+
+    $PathText = (@($State.CallPath) -join ' | ')
+
+    $EndEvent = New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
+        -Event 'CALL END' -Detail $EndDetail -Raw $Raw
+
+    $PathEvent = $null
+    if (-not [string]::IsNullOrWhiteSpace($PathText)) {
+        $PathEvent = New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
+            -Event 'CALL PATH' -Detail $PathText -Raw $Raw
+    }
+
+    Reset-IxmCallState -State $State
+
+    if ($Mode -eq 'Summary' -and $null -ne $PathEvent) {
+        return @($EndEvent,$PathEvent)
+    }
+
+    return $EndEvent
 }
 
 function Reset-IxmCallState {
@@ -1112,10 +1211,31 @@ function Convert-IdmsLineToEvent {
     # briefly so duplicate BKG/SIP copies of the same IDMS message can inherit
     # the channel and be suppressed in Summary mode.
     if ($null -ne $ChannelNumber) {
-        $script:RecentIdms[$Payload.Signature] = [pscustomobject]@{
-            Channel = [int]$ChannelNumber
-            Seen = Get-Date
-            Emitted = $false
+        $NowIdms = Get-Date
+
+        if ($script:RecentIdms.ContainsKey($Payload.Signature)) {
+            $Existing = $script:RecentIdms[$Payload.Signature]
+
+            if (($NowIdms - $Existing.Seen).TotalSeconds -le 3) {
+                # Same payload copied again by IXM. Preserve Emitted so the
+                # second STATUS copy cannot become a second Summary event.
+                $Existing.Channel = [int]$ChannelNumber
+                $Existing.Seen = $NowIdms
+            }
+            else {
+                $script:RecentIdms[$Payload.Signature] = [pscustomobject]@{
+                    Channel = [int]$ChannelNumber
+                    Seen = $NowIdms
+                    Emitted = $false
+                }
+            }
+        }
+        else {
+            $script:RecentIdms[$Payload.Signature] = [pscustomobject]@{
+                Channel = [int]$ChannelNumber
+                Seen = $NowIdms
+                Emitted = $false
+            }
         }
     }
     elseif ($script:RecentIdms.ContainsKey($Payload.Signature)) {
@@ -1319,47 +1439,10 @@ function Convert-LiveLineToEvents {
             $State = Get-ChannelState -ChannelNumber ([int]$ChannelNumber)
         }
 
-        # Voice Server channel reset is the end-of-session boundary used by
-        # Summary mode. Only emit an end when traceIXM has an active call on
-        # this channel; reset noise between calls is ignored.
-        if ($Source -eq 'STATUS' -and
-            $null -ne $State -and
-            $State.CallActive -and
-            $Line -match '(?i)ResetChannel\(\)\s+designated event:\s*28') {
-
-            $EndTime = Convert-IxmTimeTextToDateTime -TimeText $Time
-            if ($EndTime -eq [datetime]::MinValue) {
-                $EndTime = Get-Date
-            }
-
-            $DurationSeconds = [math]::Round(($EndTime - $State.CallStartTime).TotalSeconds,1)
-            if ($DurationSeconds -lt 0) {
-                $DurationSeconds = [math]::Round(((Get-Date) - $State.CallStartTime).TotalSeconds,1)
-            }
-
-            $EndDetail = 'Duration={0} sec' -f $DurationSeconds
-            if ($State.Mailbox) {
-                $EndDetail += ('  Mailbox={0}' -f $State.Mailbox)
-            }
-
-            $PathText = (@($State.CallPath) -join ' | ')
-            $EndEvent = New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
-                -Event 'CALL END' -Detail $EndDetail -Raw $Line
-
-            $PathEvent = $null
-            if (-not [string]::IsNullOrWhiteSpace($PathText)) {
-                $PathEvent = New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
-                    -Event 'CALL PATH' -Detail $PathText -Raw $Line
-            }
-
-            Reset-IxmCallState -State $State
-
-            if ($Mode -eq 'Summary' -and $null -ne $PathEvent) {
-                return @($EndEvent,$PathEvent)
-            }
-
-            return $EndEvent
-        }
+        # Event 28 / ResetChannel is NOT a reliable call-end boundary.
+        # IXM can emit it while a subscriber session is still active (for
+        # example between prompt/menu operations), so Summary intentionally
+        # ignores it. Call end is finalized from a correlated SIP BYE/CANCEL.
 
         # -----------------------------------------------------------------
         # Subscriber TUI / DTMF
@@ -1497,6 +1580,9 @@ function Convert-LiveLineToEvents {
                         $Detail += ('  Menu="{0}"' -f $State.CurrentMenu)
                         $State.LastMenuDigit = $NewDigits
                         $State.LastMenuDigitTime = Get-Date
+
+                        $PrettyMenuForDigit = Format-IxmMenuName -Menu $State.CurrentMenu
+                        Add-IxmCallPathItem -State $State -Item ('{0} [{1}]' -f $PrettyMenuForDigit,$NewDigits)
                     }
 
                     $SafeRaw = if ($State.SensitiveInput) { '[PASSWORD DTMF HIDDEN]' } else { $Line }
@@ -1545,7 +1631,12 @@ function Convert-LiveLineToEvents {
 
                 if ($CanRoute) {
                     $RouteDetail = '{0} --[{1}]--> {2}' -f $PrettyOld,$State.LastMenuDigit,$PrettyNew
-                    Add-IxmCallPathItem -State $State -Item $RouteDetail
+                    $PendingDigitItem = '{0} [{1}]' -f $PrettyOld,$State.LastMenuDigit
+
+                    if (-not (Replace-IxmLastCallPathItem -State $State -Expected $PendingDigitItem -Replacement $RouteDetail)) {
+                        Add-IxmCallPathItem -State $State -Item $RouteDetail
+                    }
+
                     $State.LastMenuDigit = ''
                     $State.LastMenuDigitTime = [datetime]::MinValue
 
@@ -1659,8 +1750,27 @@ function Convert-LiveLineToEvents {
         if ($Source -eq 'SIP' -or $Source -eq 'RVSIP') {
             $Trimmed = $Line.Trim()
 
-            if ($Trimmed -match '^(INVITE|ACK|BYE|CANCEL|REFER|NOTIFY|OPTIONS|PRACK|UPDATE|INFO|REGISTER)\s+') {
-                $SipMethod = ([string]$Matches[1]).ToUpperInvariant()
+            # SIP logs may contain timestamps/thread prefixes before the request
+            # line. Match a real SIP request token rather than requiring column 1.
+            if ($Trimmed -match '(?i)(?:^|\s)(?<Method>INVITE|ACK|BYE|CANCEL|REFER|NOTIFY|OPTIONS|PRACK|UPDATE|INFO|REGISTER)\s+(?:sip:|sips:|tel:|\*)') {
+                $SipMethod = ([string]$Matches.Method).ToUpperInvariant()
+
+                if (($SipMethod -eq 'BYE' -or $SipMethod -eq 'CANCEL')) {
+                    $DisconnectChannel = Get-IxmDisconnectChannel -ChannelNumber $ChannelNumber
+
+                    if ($null -ne $DisconnectChannel) {
+                        $EndEvents = New-IxmCallEndEvents `
+                            -Source $Source `
+                            -Time $Time `
+                            -ChannelNumber ([int]$DisconnectChannel) `
+                            -Reason $SipMethod `
+                            -Raw $Line
+
+                        if ($null -ne $EndEvents) {
+                            return $EndEvents
+                        }
+                    }
+                }
 
                 return (New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
                     -Event $SipMethod -Detail $Trimmed -Raw $Line)
