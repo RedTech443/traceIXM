@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.4
+
+- Added a separate deduplicated Summary event history so the interactive Summary pane no longer repeats identical IXM events such as duplicate INMSGSTART/INMSGEND, media timing, or recording records.
+- Raw capture history remains intact for SIP view, filtering, and ZIP export.
+- Added a 1.25-second post-BYE/CANCEL completion grace period before emitting CALL END.
+- The grace period allows late IX Messaging mailbox/recording/message-store records to enrich the completed call before the session is finalized.
+- CALL END keeps the SIP disconnect timestamp/duration while using the latest correlated mailbox state available during the grace period.
+- Existing read-only behavior, password/PIN masking, and classic command-line modes are unchanged.
+
 ## 1.2.1
 
 - Reworked interactive mode into a persistent console UI instead of a continuously scrolling trace.
