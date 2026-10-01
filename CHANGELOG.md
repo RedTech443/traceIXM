@@ -9,6 +9,18 @@
 - CALL END keeps the SIP disconnect timestamp/duration while using the latest correlated mailbox state available during the grace period.
 - Existing read-only behavior, password/PIN masking, and classic command-line modes are unchanged.
 
+## 1.2.3
+
+- Suppressed the classic startup banner and source-file listing in interactive mode.
+- Added a one-time canvas reset after startup/filter/help/export dialogs so the persistent UI does not leave old menu/setup text on screen.
+- Kept the live refresh path flicker-free with in-place redraws.
+
+## 1.2.2
+
+- Replaced per-refresh `Clear-Host` with in-place console cursor redraws to eliminate visible screen blinking.
+- Added cleanup for leftover rows when a refreshed frame is shorter than the previous frame.
+- Preserved modal menu/help/export clears as one-time transitions only.
+
 ## 1.2.1
 
 - Reworked interactive mode into a persistent console UI instead of a continuously scrolling trace.
