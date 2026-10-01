@@ -2072,6 +2072,23 @@ function Test-IxmDirectTextMatch {
     return ($Haystack.IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0)
 }
 
+function Test-IxmExactNumberMatch {
+    param(
+        [AllowEmptyString()][string]$Candidate,
+        [Parameter(Mandatory)][string]$Wanted
+    )
+
+    $CandidateDigits = ($Candidate -replace '[^0-9]','')
+    $WantedDigits = ($Wanted -replace '[^0-9]','')
+
+    if ([string]::IsNullOrWhiteSpace($CandidateDigits) -or
+        [string]::IsNullOrWhiteSpace($WantedDigits)) {
+        return $false
+    }
+
+    return ($CandidateDigits -eq $WantedDigits)
+}
+
 function Test-IxmEventMatchesFilter {
     param([Parameter(Mandatory)]$Event)
 
@@ -2104,38 +2121,45 @@ function Test-IxmEventMatchesFilter {
 
         if (-not $DirectMatch -and -not [string]::IsNullOrWhiteSpace($script:ExtensionFilter)) {
             $Value = $script:ExtensionFilter
-            if (Test-IxmDirectTextMatch -Event $Event -Value $Value) {
-                $DirectMatch = $true
-            }
-            elseif ($null -ne $State) {
+
+            if ($null -ne $State) {
                 foreach ($Candidate in @($State.CallerID,$State.Called,$State.Mailbox)) {
-                    if (-not [string]::IsNullOrWhiteSpace([string]$Candidate) -and
-                        ([string]$Candidate).IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                    if (Test-IxmExactNumberMatch -Candidate ([string]$Candidate) -Wanted $Value) {
                         $DirectMatch = $true
                         break
                     }
+                }
+            }
+
+            if (-not $DirectMatch -and $Event.Detail -match '(?i)(?:Caller|Called|Mailbox)=(?<Number>[^\s]+)') {
+                if (Test-IxmExactNumberMatch -Candidate ([string]$Matches.Number) -Wanted $Value) {
+                    $DirectMatch = $true
                 }
             }
         }
 
         if (-not $DirectMatch -and -not [string]::IsNullOrWhiteSpace($script:CallerIdFilter)) {
             $Value = $script:CallerIdFilter
-            if ((Test-IxmDirectTextMatch -Event $Event -Value $Value) -and $Event.Detail -match '(?i)Caller') {
+
+            if ($null -ne $State -and
+                (Test-IxmExactNumberMatch -Candidate ([string]$State.CallerID) -Wanted $Value)) {
                 $DirectMatch = $true
             }
-            elseif ($null -ne $State -and -not [string]::IsNullOrWhiteSpace([string]$State.CallerID) -and
-                    ([string]$State.CallerID).IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            elseif ($Event.Detail -match '(?i)Caller=(?<Number>[^\s]+)' -and
+                    (Test-IxmExactNumberMatch -Candidate ([string]$Matches.Number) -Wanted $Value)) {
                 $DirectMatch = $true
             }
         }
 
         if (-not $DirectMatch -and -not [string]::IsNullOrWhiteSpace($script:CalledFilter)) {
             $Value = $script:CalledFilter
-            if ((Test-IxmDirectTextMatch -Event $Event -Value $Value) -and $Event.Detail -match '(?i)Called') {
+
+            if ($null -ne $State -and
+                (Test-IxmExactNumberMatch -Candidate ([string]$State.Called) -Wanted $Value)) {
                 $DirectMatch = $true
             }
-            elseif ($null -ne $State -and -not [string]::IsNullOrWhiteSpace([string]$State.Called) -and
-                    ([string]$State.Called).IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            elseif ($Event.Detail -match '(?i)Called=(?<Number>[^\s]+)' -and
+                    (Test-IxmExactNumberMatch -Candidate ([string]$Matches.Number) -Wanted $Value)) {
                 $DirectMatch = $true
             }
         }
