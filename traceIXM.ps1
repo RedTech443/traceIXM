@@ -89,7 +89,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.2.2'
+$script:TraceIxmVersion = '1.2.3'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
@@ -2207,6 +2207,23 @@ function Test-IxmViewAllowsEvent {
     return $true
 }
 
+function Reset-IxmInteractiveCanvas {
+    if (-not $script:InteractiveMode) { return }
+
+    try {
+        [Console]::CursorVisible = $true
+    }
+    catch {}
+
+    # This is intentionally a one-time clear used only when leaving a modal
+    # menu/help/export screen. The live refresh loop itself never Clear-Hosts.
+    Clear-Host
+    $script:LastUiLineCount = 0
+    $script:CurrentUiLineCount = 0
+    $script:UiDirty = $true
+    $script:LastUiRefresh = [datetime]::MinValue
+}
+
 function Get-IxmMatchingCapturedEvents {
     return @(
         $script:CapturedEvents |
@@ -2391,7 +2408,7 @@ function Show-IxmInteractiveScreen {
 
 function Show-IxmRecentSipTraffic {
     $script:InteractiveView = 'SIP'
-    $script:UiDirty = $true
+    Reset-IxmInteractiveCanvas
     Show-IxmInteractiveScreen -Force
 }
 
@@ -2531,7 +2548,7 @@ function Invoke-IxmInteractiveKeys {
                 'F' {
                     Clear-Host
                     Show-IxmFilterMenu
-                    $script:UiDirty = $true
+                    Reset-IxmInteractiveCanvas
                     Show-IxmInteractiveScreen -Force
                 }
                 'S' {
@@ -2559,8 +2576,8 @@ function Invoke-IxmInteractiveKeys {
                     $Entered = Read-Host ('Capture file [{0}]' -f $Suggested)
                     if ([string]::IsNullOrWhiteSpace($Entered)) { $Entered = $Suggested }
                     [void](Export-IxmCapture -DestinationPath $Entered)
-                    $script:UiDirty = $true
                     Start-Sleep -Milliseconds 500
+                    Reset-IxmInteractiveCanvas
                     Show-IxmInteractiveScreen -Force
                 }
                 'H' {
@@ -2685,31 +2702,33 @@ if ($script:InteractiveMode) {
     Write-Host 'Read-only live trace. Password/PIN digits are always hidden.' -ForegroundColor DarkGray
     Write-Host ''
     Show-IxmFilterMenu -Startup
+    Reset-IxmInteractiveCanvas
 }
 
-Write-Section 'Avaya IX Messaging - Live Call Trace'
-Write-Host ('Version      : {0}' -f $script:TraceIxmVersion)
-Write-Host ('VServer logs : {0}' -f $ResolvedLogRoot)
-Write-Host ('DBCOM logs   : {0}' -f (Join-Path (Split-Path -Parent $ResolvedLogRoot) 'DBCOM'))
-Write-Host ('Mode         : {0}' -f $Mode)
-Write-Host ('Filter       : {0}' -f (Get-IxmFilterDescription))
-if ($script:InteractiveMode) {
-    Write-Host 'Interactive  : 1=Summary  2=SIP  3=Calls  F=Filter  W=Write  H=Help  Q=Quit'
-}
-if ($Mode -eq 'Summary') {
-    Write-Host 'View         : correlated operator trace'
-}
-elseif ($Mode -eq 'Status') {
-    Write-Host 'View         : forensic/raw VServer status'
-}
-Write-Host ('Channel      : {0}' -f $(if ($Channel -gt 0) { $Channel } else { 'ALL' }))
-Write-Host ('Match        : {0}' -f $(if ($Match) { $Match } else { '(none)' }))
-Write-Host ('SQL enrich   : {0}' -f $(if ($SqlEnrichment) { 'YES - SELECT only' } else { 'NO' }))
-Write-Host ('Poll         : {0} ms' -f $PollMilliseconds)
-Write-Host 'Password DTMF: HIDDEN (always)'
+if (-not $script:InteractiveMode) {
+    Write-Section 'Avaya IX Messaging - Live Call Trace'
+    Write-Host ('Version      : {0}' -f $script:TraceIxmVersion)
+    Write-Host ('VServer logs : {0}' -f $ResolvedLogRoot)
+    Write-Host ('DBCOM logs   : {0}' -f (Join-Path (Split-Path -Parent $ResolvedLogRoot) 'DBCOM'))
+    Write-Host ('Mode         : {0}' -f $Mode)
+    Write-Host ('Filter       : {0}' -f (Get-IxmFilterDescription))
 
-if ($OutputPath) {
-    Write-Host ('Output file  : {0}' -f $OutputPath)
+    if ($Mode -eq 'Summary') {
+        Write-Host 'View         : correlated operator trace'
+    }
+    elseif ($Mode -eq 'Status') {
+        Write-Host 'View         : forensic/raw VServer status'
+    }
+
+    Write-Host ('Channel      : {0}' -f $(if ($Channel -gt 0) { $Channel } else { 'ALL' }))
+    Write-Host ('Match        : {0}' -f $(if ($Match) { $Match } else { '(none)' }))
+    Write-Host ('SQL enrich   : {0}' -f $(if ($SqlEnrichment) { 'YES - SELECT only' } else { 'NO' }))
+    Write-Host ('Poll         : {0} ms' -f $PollMilliseconds)
+    Write-Host 'Password DTMF: HIDDEN (always)'
+
+    if ($OutputPath) {
+        Write-Host ('Output file  : {0}' -f $OutputPath)
+    }
 }
 
 if ($SqlEnrichment) {
@@ -2718,18 +2737,23 @@ if ($SqlEnrichment) {
 
 $Sources = @(Get-EnabledSources)
 
-Write-Host ''
-Write-Host 'Active source files:' -ForegroundColor Cyan
+if (-not $script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'Active source files:' -ForegroundColor Cyan
+}
 
 foreach ($Source in $Sources) {
     $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+
     if ($Path) {
-        Write-Host ('  {0,-11} {1}' -f $Source,$Path) -ForegroundColor DarkGray
+        if (-not $script:InteractiveMode) {
+            Write-Host ('  {0,-11} {1}' -f $Source,$Path) -ForegroundColor DarkGray
+        }
 
         # Initialize at EOF.
         [void](Get-NewLogLines -Type $Source -Path $Path)
     }
-    else {
+    elseif (-not $script:InteractiveMode) {
         Write-Host ('  {0,-11} (today''s file not present yet)' -f $Source) -ForegroundColor DarkGray
     }
 }
