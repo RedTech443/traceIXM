@@ -2442,7 +2442,29 @@ function Show-IxmInteractiveHelp {
     Write-Host '  1  Summary - correlated IXM activity'
     Write-Host '  2  SIP     - SIP/RVSIP signaling'
     Write-Host '  3  Calls   - channel/session table'
-  function Invoke-IxmInteractiveKeys {
+    Write-Host ''
+    Write-Host 'Controls:' -ForegroundColor White
+    Write-Host '  F  Change capture filter'
+    Write-Host '  S  Toggle Summary / SIP'
+    Write-Host '  C  Open Calls view'
+    Write-Host '  W  Write current filtered capture to ZIP'
+    Write-Host '  H  Show this help'
+    Write-Host '  Q  Quit'
+    Write-Host ''
+    Write-Host 'Press any key to return...' -ForegroundColor DarkGray
+
+    try {
+        [void][Console]::ReadKey($true)
+    }
+    catch {
+        [void](Read-Host 'Press ENTER to return')
+    }
+
+    $script:UiDirty = $true
+    Show-IxmInteractiveScreen -Force
+}
+
+function Invoke-IxmInteractiveKeys {
     if (-not $script:InteractiveMode) { return }
 
     try {
