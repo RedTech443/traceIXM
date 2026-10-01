@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.2.1**
+**1.2.4**
 
 PowerShell **5.1+**.
 
