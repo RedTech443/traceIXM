@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0
+
+- Added a traceSM-style interactive startup filter menu.
+- Added dedicated filters for extension/mailbox, caller ID, called number, IXM channel, SIP Call-ID, IP address, and text.
+- Extension/caller/called filtering is session-aware: once a matching IXM channel is identified, related TUI/menu events continue to be shown.
+- Added runtime hotkeys: `F` change filter, `S` Summary/SIP view, `C` call summary, `W` capture export, `H` help, and `Q` quit.
+- Added an interactive SIP view backed by IX Messaging `SIP#YYYYMMDD.log` and `RVSIP#YYYYMMDD.log`.
+- Added in-memory capture retention (bounded to 10,000 parsed events).
+- Added ZIP troubleshooting export containing `traceIXM.txt`, `sip.txt`, `filter.json`, and `sessions.json`.
+- Preserved the existing command-line modes and `-OutputPath` behavior for backward compatibility.
+- Added `-Interactive` and `-NoInteractive` switches.
+- The new SIP view remains read-only and log-based; it does not enable packet capture or modify IX Messaging.
+
 ## 1.1.2
 
 - Fixed false `CALL END` events caused by treating Voice Server Event 28 / `ResetChannel()` as a session boundary.
