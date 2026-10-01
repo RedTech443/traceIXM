@@ -63,6 +63,20 @@ param(
 
     [string]$Match = '',
 
+    [string]$Extension = '',
+
+    [string]$CallerID = '',
+
+    [string]$Called = '',
+
+    [string]$SipCallId = '',
+
+    [string]$IpAddress = '',
+
+    [switch]$Interactive,
+
+    [switch]$NoInteractive,
+
     [switch]$SqlEnrichment,
 
     [ValidateRange(50,5000)]
@@ -75,7 +89,20 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.1.2'
+$script:TraceIxmVersion = '1.2.0'
+
+$script:InteractiveMode = $false
+$script:InteractiveView = 'Summary'
+$script:QuitRequested = $false
+$script:CaptureStarted = Get-Date
+$script:CapturedEvents = New-Object System.Collections.Generic.List[object]
+$script:MaxCapturedEvents = 10000
+$script:ExtensionFilter = [string]$Extension
+$script:CallerIdFilter = [string]$CallerID
+$script:CalledFilter = [string]$Called
+$script:SipCallIdFilter = [string]$SipCallId
+$script:IpAddressFilter = [string]$IpAddress
+$script:MatchedChannels = @{}
 
 $script:TailStates = @{}
 $script:ChannelStates = @{}
@@ -1907,9 +1934,73 @@ function Convert-LiveLineToEvents {
     }
 }
 
-function Test-TraceEventFilter {
-    param([Parameter(Mandatory)]$Event)
 
+function Clear-IxmInteractiveFilters {
+    $script:ExtensionFilter = ''
+    $script:CallerIdFilter = ''
+    $script:CalledFilter = ''
+    $script:SipCallIdFilter = ''
+    $script:IpAddressFilter = ''
+    $script:MatchedChannels = @{}
+}
+
+function Get-IxmFilterDescription {
+    $Parts = @()
+
+    if ($Channel -gt 0) { $Parts += ('Channel={0}' -f $Channel) }
+    if (-not [string]::IsNullOrWhiteSpace($script:ExtensionFilter)) { $Parts += ('Extension={0}' -f $script:ExtensionFilter) }
+    if (-not [string]::IsNullOrWhiteSpace($script:CallerIdFilter)) { $Parts += ('CallerID={0}' -f $script:CallerIdFilter) }
+    if (-not [string]::IsNullOrWhiteSpace($script:CalledFilter)) { $Parts += ('Called={0}' -f $script:CalledFilter) }
+    if (-not [string]::IsNullOrWhiteSpace($script:SipCallIdFilter)) { $Parts += ('Call-ID={0}' -f $script:SipCallIdFilter) }
+    if (-not [string]::IsNullOrWhiteSpace($script:IpAddressFilter)) { $Parts += ('IP={0}' -f $script:IpAddressFilter) }
+    if (-not [string]::IsNullOrWhiteSpace($Match)) { $Parts += ('Text={0}' -f $Match) }
+
+    if ($Parts.Count -eq 0) {
+        return '<NO FILTER>'
+    }
+
+    return ($Parts -join '  ')
+}
+
+function Show-IxmFilterMenu {
+    param([switch]$Startup)
+
+    if (-not $Startup) {
+        Write-Host ''
+        Write-Host ('=' * 76) -ForegroundColor DarkGray
+    }
+
+    Write-Host 'traceIXM Capture Filter' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host ' [1] Extension / Mailbox'
+    Write-Host ' [2] Caller ID'
+    Write-Host ' [3] Called Number'
+    Write-Host ' [4] IXM Channel'
+    Write-Host ' [5] SIP Call-ID'
+    Write-Host ' [6] IP Address'
+    Write-Host ' [7] Text / Regex-style text match'
+    Write-Host ' [8] Keep current filter'
+    Write-Host ' [9] No Filter - Show All'
+    Write-Host ''
+
+    $Choice = Read-Host 'Selection'
+
+    switch ($Choice) {
+        '1' {
+            Clear-IxmInteractiveFilters
+            $script:ExtensionFilter = [string](Read-Host 'Extension / mailbox')
+        }
+        '2' {
+            Clear-IxmInteractiveFilters
+            $script:CallerIdFilter = [string](Read-Host 'Caller ID / ANI')
+        }
+        '3' {
+            Clear-IxmInteractiveFilters
+            $script:CalledFilter = [string](Read-Host 'Called number')
+        }
+        '4' {
+            $Value = Read-Host 'IXM channel'
+            if ($Value -match '^\d+
     if ($Channel -gt 0) {
         if ($null -eq $Event.Channel -or [int]$Event.Channel -ne $Channel) {
             return $false
@@ -1921,6 +2012,561 @@ function Test-TraceEventFilter {
         if ($Haystack.IndexOf($Match,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
             return $false
         }
+    }
+
+    if (Test-RecentSummaryDuplicate -Event $Event) {
+        return $false
+    }
+
+    return $true
+}
+
+function Write-TraceEvent {
+    param([Parameter(Mandatory)]$Event)
+
+    $Line = Format-IxmEventLine -Event $Event
+
+    $Color = 'Gray'
+    switch -Regex ($Event.Event) {
+        '^INMSGSTART$'       { $Color = 'Green'; break }
+        '^INMSGEND$'         { $Color = 'DarkGreen'; break }
+        '^INVITE$'           { $Color = 'Green'; break }
+        '^BYE$|^CANCEL$'     { $Color = 'Yellow'; break }
+        '^SIP [45]\d\d$'     { $Color = 'Red'; break }
+        '^VOICEMAIL SAVED$'  { $Color = 'Cyan'; break }
+        '^MESSAGE ADD$'      { $Color = 'Cyan'; break }
+        '^IDMS$'             { $Color = 'Magenta'; break }
+        '^CALL START$'       { $Color = 'Green'; break }
+        '^CALL END$'         { $Color = 'Yellow'; break }
+        '^CALL PATH$'        { $Color = 'Cyan'; break }
+        '^ROUTE$'            { $Color = 'Magenta'; break }
+        '^STATE$'            { $Color = 'Yellow'; break }
+        '^MWI$'              { $Color = 'DarkCyan'; break }
+        '^DTMF$'             { $Color = 'White'; break }
+        '^MENU$'             { $Color = 'Cyan'; break }
+        '^AUTH$'             { $Color = 'DarkYellow'; break }
+        '^LOGIN OK$'         { $Color = 'Green'; break }
+        '^LOGIN FAILED$'     { $Color = 'Red'; break }
+        '^MSG COUNT$'        { $Color = 'DarkCyan'; break }
+        '^EEAM PLAYTIME$'    { $Color = 'DarkGray'; break }
+        '^VOX LENGTH$'       { $Color = 'DarkGray'; break }
+        '^MESSAGE LENGTH$'   { $Color = 'Cyan'; break }
+        '^MSG INDEXED$'      { $Color = 'DarkCyan'; break }
+        '^SYNC STATUS$'      { $Color = 'DarkYellow'; break }
+        '^EXT SYNC OK$'      { $Color = 'Green'; break }
+        '^GRAPH$|^SMTP$'     { $Color = 'Green'; break }
+        '^GRAPH FAILED$|^SMTP FAILED$|^SYNC FAILED$' { $Color = 'Red'; break }
+        '^RECORDING$'        { $Color = 'DarkCyan'; break }
+        '^RAW$'              { $Color = 'DarkGray'; break }
+        default              { $Color = 'Gray' }
+    }
+
+    Write-Host $Line -ForegroundColor $Color
+
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+        try {
+            Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+        }
+        catch {
+            Write-Verbose ('Unable to append output file: {0}' -f $_.Exception.Message)
+        }
+    }
+}
+
+function Get-EnabledSources {
+    switch ($Mode) {
+        'Status'  { return @('STATUS') }
+        'Trace'   { return @('Trace') }
+        'SIP'     { return @('SIP','RVSIP') }
+        'DBCOM'   { return @('EEAMHELPER','TSECMGR') }
+        'All'     { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+        default   { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+    }
+}
+
+$ResolvedLogRoot = Resolve-IxmVServerLogRoot -Preferred $LogRoot
+
+$HasExplicitTraceArgs =
+    $PSBoundParameters.ContainsKey('Mode') -or
+    $PSBoundParameters.ContainsKey('Channel') -or
+    $PSBoundParameters.ContainsKey('Match') -or
+    $PSBoundParameters.ContainsKey('Extension') -or
+    $PSBoundParameters.ContainsKey('CallerID') -or
+    $PSBoundParameters.ContainsKey('Called') -or
+    $PSBoundParameters.ContainsKey('SipCallId') -or
+    $PSBoundParameters.ContainsKey('IpAddress') -or
+    $PSBoundParameters.ContainsKey('OutputPath')
+
+if ($Interactive) {
+    $script:InteractiveMode = $true
+}
+elseif ($NoInteractive) {
+    $script:InteractiveMode = $false
+}
+else {
+    $script:InteractiveMode = -not $HasExplicitTraceArgs
+}
+
+if ($script:InteractiveMode) {
+    Clear-Host
+    Write-Host ('traceIXM {0} - Avaya IX Messaging Interactive Trace' -f $script:TraceIxmVersion) -ForegroundColor Cyan
+    Write-Host 'Read-only live trace. Password/PIN digits are always hidden.' -ForegroundColor DarkGray
+    Write-Host ''
+    Show-IxmFilterMenu -Startup
+}
+
+Write-Section 'Avaya IX Messaging - Live Call Trace'
+Write-Host ('Version      : {0}' -f $script:TraceIxmVersion)
+Write-Host ('VServer logs : {0}' -f $ResolvedLogRoot)
+Write-Host ('DBCOM logs   : {0}' -f (Join-Path (Split-Path -Parent $ResolvedLogRoot) 'DBCOM'))
+Write-Host ('Mode         : {0}' -f $Mode)
+Write-Host ('Filter       : {0}' -f (Get-IxmFilterDescription))
+if ($script:InteractiveMode) {
+    Write-Host 'Interactive  : F=Filter  S=SIP  C=Calls  W=Write  H=Help  Q=Quit'
+}
+if ($Mode -eq 'Summary') {
+    Write-Host 'View         : correlated operator trace'
+}
+elseif ($Mode -eq 'Status') {
+    Write-Host 'View         : forensic/raw VServer status'
+}
+Write-Host ('Channel      : {0}' -f $(if ($Channel -gt 0) { $Channel } else { 'ALL' }))
+Write-Host ('Match        : {0}' -f $(if ($Match) { $Match } else { '(none)' }))
+Write-Host ('SQL enrich   : {0}' -f $(if ($SqlEnrichment) { 'YES - SELECT only' } else { 'NO' }))
+Write-Host ('Poll         : {0} ms' -f $PollMilliseconds)
+Write-Host 'Password DTMF: HIDDEN (always)'
+
+if ($OutputPath) {
+    Write-Host ('Output file  : {0}' -f $OutputPath)
+}
+
+if ($SqlEnrichment) {
+    Import-IxmMailboxCache
+}
+
+$Sources = @(Get-EnabledSources)
+
+Write-Host ''
+Write-Host 'Active source files:' -ForegroundColor Cyan
+
+foreach ($Source in $Sources) {
+    $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+    if ($Path) {
+        Write-Host ('  {0,-11} {1}' -f $Source,$Path) -ForegroundColor DarkGray
+
+        # Initialize at EOF.
+        [void](Get-NewLogLines -Type $Source -Path $Path)
+    }
+    else {
+        Write-Host ('  {0,-11} (today''s file not present yet)' -f $Source) -ForegroundColor DarkGray
+    }
+}
+
+$script:InitialScanComplete = $true
+
+Write-Host ''
+Write-Host 'Following new activity. Press Ctrl+C to stop.' -ForegroundColor Green
+Write-Host ('{0,-12} {1,-7} {2,-7} {3,-18} {4}' -f 'TIME','SOURCE','CHANNEL','EVENT','DETAIL') -ForegroundColor White
+Write-Host ('-' * 120) -ForegroundColor DarkGray
+
+while (-not $script:QuitRequested) {
+    foreach ($Source in $Sources) {
+        try {
+            $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+            if (-not $Path) {
+                continue
+            }
+
+            $Lines = @(Get-NewLogLines -Type $Source -Path $Path)
+
+            foreach ($Line in $Lines) {
+                $Events = @(Convert-LiveLineToEvents -Source $Source -Line $Line)
+
+                foreach ($Event in $Events) {
+                    Add-IxmCapturedEvent -Event $Event
+
+                    if ((Test-TraceEventFilter -Event $Event) -and (Test-IxmViewAllowsEvent -Event $Event)) {
+                        Write-TraceEvent -Event $Event
+                    }
+                }
+            }
+        }
+        catch {
+            $ErrLine = $_.InvocationInfo.ScriptLineNumber
+            $ErrText = $_.InvocationInfo.Line
+            if ($ErrText) { $ErrText = $ErrText.Trim() }
+
+            Write-Host (
+                '[{0}] {1}: {2}  [line {3}: {4}]' -f
+                (Get-Date -Format 'HH:mm:ss'),
+                $Source,
+                $_.Exception.Message,
+                $ErrLine,
+                $ErrText
+            ) -ForegroundColor Red
+        }
+    }
+
+    Invoke-IxmInteractiveKeys
+    Start-Sleep -Milliseconds $PollMilliseconds
+}
+
+if ($script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'traceIXM stopped.' -ForegroundColor Yellow
+}) {
+                Set-Variable -Name Channel -Scope Script -Value ([int]$Value)
+                $script:MatchedChannels = @{}
+            }
+            else {
+                Write-Host 'Invalid channel. Existing filter retained.' -ForegroundColor Yellow
+            }
+        }
+        '5' {
+            Clear-IxmInteractiveFilters
+            $script:SipCallIdFilter = [string](Read-Host 'SIP Call-ID')
+        }
+        '6' {
+            Clear-IxmInteractiveFilters
+            $script:IpAddressFilter = [string](Read-Host 'IP address')
+        }
+        '7' {
+            Clear-IxmInteractiveFilters
+            $NewMatch = [string](Read-Host 'Text to match')
+            Set-Variable -Name Match -Scope Script -Value $NewMatch
+        }
+        '8' { }
+        '9' {
+            Clear-IxmInteractiveFilters
+            Set-Variable -Name Channel -Scope Script -Value 0
+            Set-Variable -Name Match -Scope Script -Value ''
+        }
+        default {
+            if ($Startup) {
+                Write-Host 'No selection made. Starting with the current filter.' -ForegroundColor Yellow
+            }
+        }
+    }
+
+    Write-Host ('Filter: {0}' -f (Get-IxmFilterDescription)) -ForegroundColor Green
+}
+
+function Add-IxmCapturedEvent {
+    param([Parameter(Mandatory)]$Event)
+
+    $script:CapturedEvents.Add($Event)
+
+    if ($script:CapturedEvents.Count -gt $script:MaxCapturedEvents) {
+        $RemoveCount = [math]::Min(500,($script:CapturedEvents.Count - $script:MaxCapturedEvents))
+        $script:CapturedEvents.RemoveRange(0,$RemoveCount)
+    }
+}
+
+function Format-IxmEventLine {
+    param([Parameter(Mandatory)]$Event)
+
+    $ChannelText = if ($null -eq $Event.Channel) { '--' } else { [string]$Event.Channel }
+    $Prefix = '{0,-12} {1,-7} CH {2,-4} {3,-18}' -f $Event.Time,$Event.Source,$ChannelText,$Event.Event
+    return ('{0} {1}' -f $Prefix,$Event.Detail)
+}
+
+function Test-IxmDirectTextMatch {
+    param(
+        [Parameter(Mandatory)]$Event,
+        [Parameter(Mandatory)][string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $true
+    }
+
+    $Haystack = '{0} {1} {2} {3} {4}' -f $Event.Source,$Event.Channel,$Event.Event,$Event.Detail,$Event.Raw
+    return ($Haystack.IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Test-IxmEventMatchesFilter {
+    param([Parameter(Mandatory)]$Event)
+
+    if ($Channel -gt 0) {
+        if ($null -eq $Event.Channel -or [int]$Event.Channel -ne $Channel) {
+            return $false
+        }
+    }
+
+    # A channel may be marked as matched when the caller/called/mailbox value is
+    # seen once. Subsequent TUI/menu/DBCOM events on that channel then remain in
+    # the trace even when the literal extension is not repeated on every line.
+    if ($Event.Event -eq 'CALL START' -and $null -ne $Event.Channel) {
+        if ($script:MatchedChannels.ContainsKey([int]$Event.Channel)) {
+            $script:MatchedChannels.Remove([int]$Event.Channel)
+        }
+    }
+
+    $NeedsSessionFilter =
+        (-not [string]::IsNullOrWhiteSpace($script:ExtensionFilter)) -or
+        (-not [string]::IsNullOrWhiteSpace($script:CallerIdFilter)) -or
+        (-not [string]::IsNullOrWhiteSpace($script:CalledFilter))
+
+    if ($NeedsSessionFilter) {
+        $DirectMatch = $false
+
+        if ($null -ne $Event.Channel -and $script:MatchedChannels.ContainsKey([int]$Event.Channel)) {
+            $DirectMatch = $true
+        }
+
+        $State = $null
+        if ($null -ne $Event.Channel -and $script:ChannelStates.ContainsKey([int]$Event.Channel)) {
+            $State = $script:ChannelStates[[int]$Event.Channel]
+        }
+
+        if (-not $DirectMatch -and -not [string]::IsNullOrWhiteSpace($script:ExtensionFilter)) {
+            $Value = $script:ExtensionFilter
+            if (Test-IxmDirectTextMatch -Event $Event -Value $Value) {
+                $DirectMatch = $true
+            }
+            elseif ($null -ne $State) {
+                foreach ($Candidate in @($State.CallerID,$State.Called,$State.Mailbox)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$Candidate) -and
+                        ([string]$Candidate).IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        $DirectMatch = $true
+                        break
+                    }
+                }
+            }
+        }
+
+        if (-not $DirectMatch -and -not [string]::IsNullOrWhiteSpace($script:CallerIdFilter)) {
+            $Value = $script:CallerIdFilter
+            if ($Event.Detail -match ('(?i)\bCaller\s*=\s*[^ ]*' + [regex]::Escape($Value)) -or
+                ($null -ne $State -and ([string]$State.CallerID).IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+                $DirectMatch = $true
+            }
+        }
+
+        if (-not $DirectMatch -and -not [string]::IsNullOrWhiteSpace($script:CalledFilter)) {
+            $Value = $script:CalledFilter
+            if ($Event.Detail -match ('(?i)\bCalled\s*=\s*[^ ]*' + [regex]::Escape($Value)) -or
+                ($null -ne $State -and ([string]$State.Called).IndexOf($Value,[System.StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+                $DirectMatch = $true
+            }
+        }
+
+        if ($DirectMatch -and $null -ne $Event.Channel) {
+            $script:MatchedChannels[[int]$Event.Channel] = Get-Date
+        }
+
+        if (-not $DirectMatch) {
+            return $false
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:SipCallIdFilter)) {
+        if (-not (Test-IxmDirectTextMatch -Event $Event -Value $script:SipCallIdFilter)) {
+            return $false
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:IpAddressFilter)) {
+        if (-not (Test-IxmDirectTextMatch -Event $Event -Value $script:IpAddressFilter)) {
+            return $false
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Match)) {
+        if (-not (Test-IxmDirectTextMatch -Event $Event -Value $Match)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Test-IxmViewAllowsEvent {
+    param([Parameter(Mandatory)]$Event)
+
+    if (-not $script:InteractiveMode) {
+        return $true
+    }
+
+    if ($script:InteractiveView -eq 'SIP') {
+        return ($Event.Source -eq 'SIP' -or $Event.Source -eq 'RVSIP')
+    }
+
+    return $true
+}
+
+function Show-IxmRecentSipTraffic {
+    Write-Host ''
+    Write-Host ('=' * 92) -ForegroundColor DarkGray
+    Write-Host ('SIP VIEW - {0}' -f (Get-IxmFilterDescription)) -ForegroundColor Cyan
+    Write-Host ('=' * 92) -ForegroundColor DarkGray
+
+    $Items = @(
+        $script:CapturedEvents |
+            Where-Object {
+                ($_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP') -and
+                (Test-IxmEventMatchesFilter -Event $_)
+            } |
+            Select-Object -Last 100
+    )
+
+    if ($Items.Count -eq 0) {
+        Write-Host 'No matching SIP traffic captured yet.' -ForegroundColor DarkGray
+        return
+    }
+
+    foreach ($Item in $Items) {
+        Write-Host (Format-IxmEventLine -Event $Item) -ForegroundColor Gray
+    }
+}
+
+function Show-IxmCallSummary {
+    Write-Host ''
+    Write-Host ('=' * 92) -ForegroundColor DarkGray
+    Write-Host 'IXM CALL SUMMARY' -ForegroundColor Cyan
+    Write-Host ('=' * 92) -ForegroundColor DarkGray
+    Write-Host ('{0,-5} {1,-15} {2,-15} {3,-15} {4,-10} {5}' -f 'CH','CALLER','CALLED','MAILBOX','ACTIVE','LAST EVENT') -ForegroundColor White
+
+    foreach ($State in @($script:ChannelStates.Values | Sort-Object Channel)) {
+        Write-Host ('{0,-5} {1,-15} {2,-15} {3,-15} {4,-10} {5}' -f
+            $State.Channel,$State.CallerID,$State.Called,$State.Mailbox,$State.CallActive,$State.LastEvent)
+    }
+}
+
+function Export-IxmCapture {
+    param([string]$DestinationPath)
+
+    if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
+        $BaseFolder = if (Test-Path -LiteralPath 'C:\Temp' -PathType Container) { 'C:\Temp' } else { (Get-Location).Path }
+        $DestinationPath = Join-Path $BaseFolder ('traceIXM-{0}.zip' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    }
+
+    if (-not $DestinationPath.EndsWith('.zip',[System.StringComparison]::OrdinalIgnoreCase)) {
+        $DestinationPath += '.zip'
+    }
+
+    $TempFolder = Join-Path ([System.IO.Path]::GetTempPath()) ('traceIXM-{0}' -f ([guid]::NewGuid().ToString('N')))
+    New-Item -ItemType Directory -Path $TempFolder -Force | Out-Null
+
+    try {
+        $Matching = @($script:CapturedEvents | Where-Object { Test-IxmEventMatchesFilter -Event $_ })
+        $SummaryLines = @($Matching | ForEach-Object { Format-IxmEventLine -Event $_ })
+        $SipLines = @(
+            $Matching |
+                Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' } |
+                ForEach-Object {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$_.Raw)) { [string]$_.Raw }
+                    else { Format-IxmEventLine -Event $_ }
+                }
+        )
+
+        Set-Content -LiteralPath (Join-Path $TempFolder 'traceIXM.txt') -Value $SummaryLines -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $TempFolder 'sip.txt') -Value $SipLines -Encoding UTF8
+
+        $FilterInfo = [pscustomobject]@{
+            version = $script:TraceIxmVersion
+            captureStarted = $script:CaptureStarted
+            exported = Get-Date
+            filter = Get-IxmFilterDescription
+            extension = $script:ExtensionFilter
+            callerId = $script:CallerIdFilter
+            called = $script:CalledFilter
+            channel = $Channel
+            sipCallId = $script:SipCallIdFilter
+            ipAddress = $script:IpAddressFilter
+            text = $Match
+        }
+        $FilterInfo | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $TempFolder 'filter.json') -Encoding UTF8
+
+        $SessionInfo = @(
+            $script:ChannelStates.Values |
+                Sort-Object Channel |
+                Select-Object Channel,CallerID,CallerName,Called,Mailbox,MailboxID,CallID,CallActive,CallStartText,LastEvent,LastUpdate,CallPath
+        )
+        $SessionInfo | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $TempFolder 'sessions.json') -Encoding UTF8
+
+        if (Test-Path -LiteralPath $DestinationPath) {
+            Remove-Item -LiteralPath $DestinationPath -Force
+        }
+
+        Compress-Archive -Path (Join-Path $TempFolder '*') -DestinationPath $DestinationPath -CompressionLevel Optimal
+        Write-Host ('Capture written: {0}' -f $DestinationPath) -ForegroundColor Green
+        return $DestinationPath
+    }
+    finally {
+        Remove-Item -LiteralPath $TempFolder -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Show-IxmInteractiveHelp {
+    Write-Host ''
+    Write-Host 'Interactive keys:' -ForegroundColor Cyan
+    Write-Host '  F  Change filter'
+    Write-Host '  S  Toggle Summary / SIP view'
+    Write-Host '  C  Show call summary'
+    Write-Host '  W  Write current filtered capture to ZIP'
+    Write-Host '  H  Show this help'
+    Write-Host '  Q  Quit'
+    Write-Host ''
+}
+
+function Invoke-IxmInteractiveKeys {
+    if (-not $script:InteractiveMode) {
+        return
+    }
+
+    try {
+        while ([Console]::KeyAvailable) {
+            $Key = [Console]::ReadKey($true)
+
+            switch ($Key.Key) {
+                'F' {
+                    Show-IxmFilterMenu
+                    Write-Host ('Live filter: {0}' -f (Get-IxmFilterDescription)) -ForegroundColor Green
+                }
+                'S' {
+                    if ($script:InteractiveView -eq 'SIP') {
+                        $script:InteractiveView = 'Summary'
+                        Write-Host 'View: SUMMARY' -ForegroundColor Green
+                    }
+                    else {
+                        $script:InteractiveView = 'SIP'
+                        Show-IxmRecentSipTraffic
+                        Write-Host 'View: SIP (press S to return to Summary)' -ForegroundColor Green
+                    }
+                }
+                'C' { Show-IxmCallSummary }
+                'W' {
+                    $Suggested = if (Test-Path -LiteralPath 'C:\Temp' -PathType Container) {
+                        Join-Path 'C:\Temp' ('traceIXM-{0}.zip' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+                    }
+                    else {
+                        Join-Path (Get-Location).Path ('traceIXM-{0}.zip' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+                    }
+
+                    $Entered = Read-Host ('Capture file [{0}]' -f $Suggested)
+                    if ([string]::IsNullOrWhiteSpace($Entered)) { $Entered = $Suggested }
+                    [void](Export-IxmCapture -DestinationPath $Entered)
+                }
+                'H' { Show-IxmInteractiveHelp }
+                'Q' {
+                    $script:QuitRequested = $true
+                    return
+                }
+            }
+        }
+    }
+    catch {
+        # Some remoting/redirected hosts do not expose Console.KeyAvailable.
+        # The trace remains usable; Ctrl+C still stops it.
+    }
+}
+
+function Test-TraceEventFilter {
+    param([Parameter(Mandatory)]$Event)
+
+    if (-not (Test-IxmEventMatchesFilter -Event $Event)) {
+        return $false
     }
 
     if (Test-RecentSummaryDuplicate -Event $Event) {
