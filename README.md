@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.2.0**
+**1.2.1**
 
 PowerShell **5.1+**.
 
@@ -103,16 +103,21 @@ At startup, choose one of the built-in filters:
 
 Extension/caller/called filtering is session-aware. Once a matching IXM channel is identified, traceIXM continues showing related TUI/menu activity on that channel even when the literal number is not repeated on every log line.
 
-While the trace is running:
+While the trace is running, the interactive console is a persistent screen instead of a scrolling log:
 
 ```text
+1  Summary - correlated IXM activity
+2  SIP     - SIP/RVSIP signaling
+3  Calls   - channel/session table
 F  Change filter
-S  Toggle Summary / SIP view
-C  Show call summary
+S  Toggle Summary / SIP
+C  Open Calls view
 W  Write the current filtered capture to a ZIP file
 H  Show interactive help
 Q  Quit
 ```
+
+The header always shows the active view, current filter, captured/matched counts, SIP count, active-call count, and capture start time. The body automatically uses the available console height for the most recent matching rows.
 
 The SIP view uses IX Messaging's own `SIP#YYYYMMDD.log` and `RVSIP#YYYYMMDD.log`; it does not enable packet capture or modify IXM.
 
