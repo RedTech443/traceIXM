@@ -89,7 +89,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.2.1'
+$script:TraceIxmVersion = '1.2.2'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
@@ -97,6 +97,8 @@ $script:QuitRequested = $false
 $script:UiDirty = $true
 $script:LastUiRefresh = [datetime]::MinValue
 $script:UiRefreshMilliseconds = 500
+$script:LastUiLineCount = 0
+$script:CurrentUiLineCount = 0
 $script:CaptureStarted = Get-Date
 $script:CapturedEvents = New-Object System.Collections.Generic.List[object]
 $script:MaxCapturedEvents = 10000
@@ -2259,6 +2261,7 @@ function Write-IxmUiLine {
 
     $Width = (Get-IxmConsoleWidth) - 1
     Write-Host (Format-IxmUiText -Text $Text -Width $Width) -ForegroundColor $Color
+    $script:CurrentUiLineCount++
 }
 
 function Get-IxmActiveCallStates {
@@ -2293,7 +2296,20 @@ function Show-IxmInteractiveScreen {
     $SipCount = @($Matching | Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }).Count
     $Height = Get-IxmConsoleHeight
 
-    Clear-Host
+    # Redraw in place instead of Clear-Host. Clearing the console on every
+    # refresh causes a visible flash/blink in Windows PowerShell.
+    $PreviousLineCount = $script:LastUiLineCount
+    $script:CurrentUiLineCount = 0
+
+    try {
+        [Console]::CursorVisible = $false
+        [Console]::SetCursorPosition(0,0)
+    }
+    catch {
+        # Fall back to normal console output if cursor positioning is not
+        # available in the current host.
+    }
+
     Write-IxmUiLine -Text ('traceIXM {0}  |  Avaya IX Messaging Interactive Trace' -f $script:TraceIxmVersion) -Color Cyan
     Write-IxmUiLine -Text ('VIEW: {0,-7}  FILTER: {1}' -f $script:InteractiveView,(Get-IxmFilterDescription)) -Color White
     Write-IxmUiLine -Text ('CAPTURED: {0}   MATCHED: {1}   SIP: {2}   ACTIVE CALLS: {3}   STARTED: {4}' -f
@@ -2355,6 +2371,22 @@ function Show-IxmInteractiveScreen {
             }
         }
     }
+
+    # If the new frame is shorter than the previous one, blank the leftover
+    # rows so stale lines from the old view do not remain on screen.
+    if ($PreviousLineCount -gt $script:CurrentUiLineCount) {
+        $Width = (Get-IxmConsoleWidth) - 1
+        for ($i = $script:CurrentUiLineCount; $i -lt $PreviousLineCount; $i++) {
+            Write-Host (' ' * $Width)
+        }
+    }
+
+    $script:LastUiLineCount = [math]::Max($script:CurrentUiLineCount,$PreviousLineCount)
+
+    try {
+        [Console]::SetCursorPosition(0,[math]::Min($script:CurrentUiLineCount,(Get-IxmConsoleHeight) - 1))
+    }
+    catch {}
 }
 
 function Show-IxmRecentSipTraffic {
