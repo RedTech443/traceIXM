@@ -89,7 +89,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.2.3'
+$script:TraceIxmVersion = '1.2.4'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
@@ -101,7 +101,10 @@ $script:LastUiLineCount = 0
 $script:CurrentUiLineCount = 0
 $script:CaptureStarted = Get-Date
 $script:CapturedEvents = New-Object System.Collections.Generic.List[object]
+$script:SummaryEvents = New-Object System.Collections.Generic.List[object]
+$script:SummaryStoreSignatures = @{}
 $script:MaxCapturedEvents = 10000
+$script:CallEndGraceMilliseconds = 1250
 $script:ExtensionFilter = [string]$Extension
 $script:CallerIdFilter = [string]$CallerID
 $script:CalledFilter = [string]$Called
@@ -503,6 +506,13 @@ function Get-ChannelState {
             LastMenuDigit = ''
             LastMenuDigitTime = [datetime]::MinValue
             LastStateLogTime = [datetime]::MinValue
+            PendingEnd = $false
+            PendingEndObserved = [datetime]::MinValue
+            PendingEndTime = [datetime]::MinValue
+            PendingEndText = ''
+            PendingEndReason = ''
+            PendingEndSource = ''
+            PendingEndRaw = ''
         }
     }
 
@@ -591,7 +601,33 @@ function New-IxmCallEndEvents {
         return
     }
 
+    # Delay final CALL END briefly because IXM often writes mailbox/recording
+    # detail just after the SIP BYE/CANCEL.
     $EndTime = Convert-IxmTimeTextToDateTime -TimeText $Time
+    if ($EndTime -eq [datetime]::MinValue) {
+        $EndTime = Get-Date
+    }
+
+    $State.PendingEnd = $true
+    $State.PendingEndObserved = Get-Date
+    $State.PendingEndTime = $EndTime
+    $State.PendingEndText = $Time
+    $State.PendingEndReason = $Reason
+    $State.PendingEndSource = $Source
+    $State.PendingEndRaw = $Raw
+    $State.LastUpdate = Get-Date
+
+    return
+}
+
+function Complete-IxmPendingCallEnd {
+    param([Parameter(Mandatory)]$State)
+
+    if (-not $State.PendingEnd -or -not $State.CallActive) {
+        return
+    }
+
+    $EndTime = $State.PendingEndTime
     if ($EndTime -eq [datetime]::MinValue) {
         $EndTime = Get-Date
     }
@@ -605,18 +641,21 @@ function New-IxmCallEndEvents {
     if ($State.Mailbox) {
         $EndDetail += ('  Mailbox={0}' -f $State.Mailbox)
     }
-    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
-        $EndDetail += ('  Reason={0}' -f $Reason)
+    if (-not [string]::IsNullOrWhiteSpace($State.PendingEndReason)) {
+        $EndDetail += ('  Reason={0}' -f $State.PendingEndReason)
     }
 
     $PathText = (@($State.CallPath) -join ' | ')
+    $Source = if ($State.PendingEndSource) { $State.PendingEndSource } else { 'SIP' }
+    $TimeText = if ($State.PendingEndText) { $State.PendingEndText } else { (Get-Date -Format 'HH:mm:ss.fff') }
+    $Raw = [string]$State.PendingEndRaw
 
-    $EndEvent = New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
+    $EndEvent = New-TraceEvent -Source $Source -Time $TimeText -ChannelNumber $State.Channel \`
         -Event 'CALL END' -Detail $EndDetail -Raw $Raw
 
     $PathEvent = $null
     if (-not [string]::IsNullOrWhiteSpace($PathText)) {
-        $PathEvent = New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
+        $PathEvent = New-TraceEvent -Source $Source -Time $TimeText -ChannelNumber $State.Channel \`
             -Event 'CALL PATH' -Detail $PathText -Raw $Raw
     }
 
@@ -627,6 +666,25 @@ function New-IxmCallEndEvents {
     }
 
     return $EndEvent
+}
+
+function Get-IxmCompletedPendingCallEnds {
+    $Completed = @()
+    $Now = Get-Date
+
+    foreach ($State in @($script:ChannelStates.Values)) {
+        if (-not $State.PendingEnd -or -not $State.CallActive) {
+            continue
+        }
+
+        if (($Now - $State.PendingEndObserved).TotalMilliseconds -lt $script:CallEndGraceMilliseconds) {
+            continue
+        }
+
+        $Completed += @(Complete-IxmPendingCallEnd -State $State)
+    }
+
+    return $Completed
 }
 
 function Reset-IxmCallState {
@@ -643,6 +701,13 @@ function Reset-IxmCallState {
     $State.CurrentTuiState = ''
     $State.SensitiveInput = $false
     $State.InputContext = ''
+    $State.PendingEnd = $false
+    $State.PendingEndObserved = [datetime]::MinValue
+    $State.PendingEndTime = [datetime]::MinValue
+    $State.PendingEndText = ''
+    $State.PendingEndReason = ''
+    $State.PendingEndSource = ''
+    $State.PendingEndRaw = ''
 }
 
 function Format-IxmMenuName {
@@ -1309,6 +1374,13 @@ function Convert-IdmsLineToEvent {
         if ($Payload.Called) { $State.Called = $Payload.Called }
 
         if (-not $State.CallActive) {
+            $State.PendingEnd = $false
+            $State.PendingEndObserved = [datetime]::MinValue
+            $State.PendingEndTime = [datetime]::MinValue
+            $State.PendingEndText = ''
+            $State.PendingEndReason = ''
+            $State.PendingEndSource = ''
+            $State.PendingEndRaw = ''
             $State.CallActive = $true
             $State.CallStartTime = Convert-IxmTimeTextToDateTime -TimeText $Time
             if ($State.CallStartTime -eq [datetime]::MinValue) {
@@ -2064,6 +2136,39 @@ function Add-IxmCapturedEvent {
     }
 }
 
+function Add-IxmSummaryEvent {
+    param([Parameter(Mandatory)]$Event)
+
+    $Signature = '{0}|{1}|{2}|{3}' -f $Event.Source,$Event.Channel,$Event.Event,$Event.Detail
+    $Now = Get-Date
+
+    if ($script:SummaryStoreSignatures.ContainsKey($Signature)) {
+        $Previous = $script:SummaryStoreSignatures[$Signature]
+        if (($Now - $Previous).TotalSeconds -le 2) {
+            $script:SummaryStoreSignatures[$Signature] = $Now
+            return $false
+        }
+    }
+
+    $script:SummaryStoreSignatures[$Signature] = $Now
+    $script:SummaryEvents.Add($Event)
+
+    if ($script:SummaryEvents.Count -gt $script:MaxCapturedEvents) {
+        $RemoveCount = [math]::Min(500,($script:SummaryEvents.Count - $script:MaxCapturedEvents))
+        $script:SummaryEvents.RemoveRange(0,$RemoveCount)
+    }
+
+    if ($script:SummaryStoreSignatures.Count -gt 1000) {
+        foreach ($Key in @($script:SummaryStoreSignatures.Keys)) {
+            if (($Now - $script:SummaryStoreSignatures[$Key]).TotalSeconds -gt 15) {
+                $script:SummaryStoreSignatures.Remove($Key)
+            }
+        }
+    }
+
+    return $true
+}
+
 function Format-IxmEventLine {
     param([Parameter(Mandatory)]$Event)
 
@@ -2231,6 +2336,13 @@ function Get-IxmMatchingCapturedEvents {
     )
 }
 
+function Get-IxmMatchingSummaryEvents {
+    return @(
+        $script:SummaryEvents |
+            Where-Object { Test-IxmEventMatchesFilter -Event $_ }
+    )
+}
+
 function Get-IxmConsoleWidth {
     try {
         $Width = [Console]::WindowWidth
@@ -2308,9 +2420,10 @@ function Show-IxmInteractiveScreen {
     $script:LastUiRefresh = $Now
     $script:UiDirty = $false
 
-    $Matching = @(Get-IxmMatchingCapturedEvents)
+    $MatchingRaw = @(Get-IxmMatchingCapturedEvents)
+    $Matching = @(Get-IxmMatchingSummaryEvents)
     $ActiveCalls = @(Get-IxmActiveCallStates)
-    $SipCount = @($Matching | Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }).Count
+    $SipCount = @($MatchingRaw | Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }).Count
     $Height = Get-IxmConsoleHeight
 
     # Redraw in place instead of Clear-Host. Clearing the console on every
@@ -2358,7 +2471,7 @@ function Show-IxmInteractiveScreen {
             Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
 
             $Items = @(
-                $Matching |
+                $MatchingRaw |
                     Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }
             )
 
@@ -2785,6 +2898,7 @@ while (-not $script:QuitRequested) {
 
                 foreach ($Event in $Events) {
                     Add-IxmCapturedEvent -Event $Event
+                    [void](Add-IxmSummaryEvent -Event $Event)
 
                     if (Test-TraceEventFilter -Event $Event) {
                         if ($script:InteractiveMode) {
@@ -2815,6 +2929,26 @@ while (-not $script:QuitRequested) {
                 $ErrLine,
                 $ErrText
             ) -ForegroundColor Red
+        }
+    }
+
+    $CompletedEndEvents = @(Get-IxmCompletedPendingCallEnds)
+    foreach ($Event in $CompletedEndEvents) {
+        Add-IxmCapturedEvent -Event $Event
+        [void](Add-IxmSummaryEvent -Event $Event)
+
+        if (Test-TraceEventFilter -Event $Event) {
+            if ($script:InteractiveMode) {
+                $script:UiDirty = $true
+
+                if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                    $Line = Format-IxmEventLine -Event $Event
+                    Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                }
+            }
+            elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                Write-TraceEvent -Event $Event
+            }
         }
     }
 
