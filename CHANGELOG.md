@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.2.4
+
+- Added a separate deduplicated Summary event history so the interactive Summary pane no longer repeats identical IXM events such as duplicate INMSGSTART/INMSGEND, media timing, or recording records.
+- Raw capture history remains intact for SIP view, filtering, and ZIP export.
+- Added a 1.25-second post-BYE/CANCEL completion grace period before emitting CALL END.
+- The grace period allows late IX Messaging mailbox/recording/message-store records to enrich the completed call before the session is finalized.
+- CALL END keeps the SIP disconnect timestamp/duration while using the latest correlated mailbox state available during the grace period.
+- Existing read-only behavior, password/PIN masking, and classic command-line modes are unchanged.
+
+## 1.2.3
+
+- Suppressed the classic startup banner and source-file listing in interactive mode.
+- Added a one-time canvas reset after startup/filter/help/export dialogs so the persistent UI does not leave old menu/setup text on screen.
+- Kept the live refresh path flicker-free with in-place redraws.
+
+## 1.2.2
+
+- Replaced per-refresh `Clear-Host` with in-place console cursor redraws to eliminate visible screen blinking.
+- Added cleanup for leftover rows when a refreshed frame is shorter than the previous frame.
+- Preserved modal menu/help/export clears as one-time transitions only.
+
+## 1.2.1
+
+- Reworked interactive mode into a persistent console UI instead of a continuously scrolling trace.
+- Added dedicated Summary, SIP, and Calls screens selectable with `1`, `2`, and `3`.
+- Added a persistent header showing the current filter, view, captured/matched event counts, SIP count, active-call count, and capture start time.
+- Summary and SIP screens automatically show the most recent rows that fit the current console height.
+- Calls screen displays the current per-channel caller/called/mailbox/session state.
+- Existing `S` and `C` shortcuts remain available as aliases.
+- Added explicit startup selection `0` for starting/continuing with no filter.
+- Preserved non-interactive command-line behavior and capture export.
+
+## 1.2.0
+
+- Added a traceSM-style interactive startup filter menu.
+- Added dedicated filters for extension/mailbox, caller ID, called number, IXM channel, SIP Call-ID, IP address, and text.
+- Extension/caller/called filtering is session-aware: once a matching IXM channel is identified, related TUI/menu events continue to be shown.
+- Added runtime hotkeys: `F` change filter, `S` Summary/SIP view, `C` call summary, `W` capture export, `H` help, and `Q` quit.
+- Added an interactive SIP view backed by IX Messaging `SIP#YYYYMMDD.log` and `RVSIP#YYYYMMDD.log`.
+- Added in-memory capture retention (bounded to 10,000 parsed events).
+- Added ZIP troubleshooting export containing `traceIXM.txt`, `sip.txt`, `filter.json`, and `sessions.json`.
+- Preserved the existing command-line modes and `-OutputPath` behavior for backward compatibility.
+- Added `-Interactive` and `-NoInteractive` switches.
+- The new SIP view remains read-only and log-based; it does not enable packet capture or modify IX Messaging.
+
 ## 1.1.2
 
 - Fixed false `CALL END` events caused by treating Voice Server Event 28 / `ResetChannel()` as a session boundary.

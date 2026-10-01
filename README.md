@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.1.2**
+**1.2.4**
 
 PowerShell **5.1+**.
 
@@ -79,10 +79,92 @@ X:\UC\logs\DBCOM\EEAM_TSECMGR#YYYYMMDD.log
 
 ## Usage
 
-Default correlated trace:
+### Interactive trace (default)
+
+Running traceIXM with no trace/filter arguments starts the interactive tracer:
 
 ```powershell
 .\traceIXM.ps1
+```
+
+At startup, choose one of the built-in filters:
+
+```text
+ [1] Extension / Mailbox
+ [2] Caller ID
+ [3] Called Number
+ [4] IXM Channel
+ [5] SIP Call-ID
+ [6] IP Address
+ [7] Text match
+ [8] Keep current filter
+ [9] No Filter - Show All
+```
+
+Extension/caller/called filtering is session-aware. Once a matching IXM channel is identified, traceIXM continues showing related TUI/menu activity on that channel even when the literal number is not repeated on every log line.
+
+While the trace is running, the interactive console is a persistent screen instead of a scrolling log:
+
+```text
+1  Summary - correlated IXM activity
+2  SIP     - SIP/RVSIP signaling
+3  Calls   - channel/session table
+F  Change filter
+S  Toggle Summary / SIP
+C  Open Calls view
+W  Write the current filtered capture to a ZIP file
+H  Show interactive help
+Q  Quit
+```
+
+The header always shows the active view, current filter, captured/matched counts, SIP count, active-call count, and capture start time. The body automatically uses the available console height for the most recent matching rows.
+
+The SIP view uses IX Messaging's own `SIP#YYYYMMDD.log` and `RVSIP#YYYYMMDD.log`; it does not enable packet capture or modify IXM.
+
+### Command-line / classic mode
+
+Explicit command-line trace arguments retain the traditional scrolling behavior.
+
+Filter by extension/mailbox:
+
+```powershell
+.\traceIXM.ps1 -Extension 10000
+```
+
+Filter by caller ID / ANI:
+
+```powershell
+.\traceIXM.ps1 -CallerID 8605551212
+```
+
+Filter by called number:
+
+```powershell
+.\traceIXM.ps1 -Called 10099
+```
+
+Filter by SIP Call-ID:
+
+```powershell
+.\traceIXM.ps1 -SipCallId "example-call-id"
+```
+
+Filter by IP address:
+
+```powershell
+.\traceIXM.ps1 -IpAddress 10.1.30.20
+```
+
+Force the interactive UI while supplying other parameters:
+
+```powershell
+.\traceIXM.ps1 -Interactive -SqlEnrichment
+```
+
+Force classic/non-interactive behavior:
+
+```powershell
+.\traceIXM.ps1 -NoInteractive
 ```
 
 Trace only one IXM channel:
@@ -97,11 +179,22 @@ Filter output for a mailbox, extension, number, GUID, or other text:
 .\traceIXM.ps1 -Match 10005
 ```
 
-Write the displayed trace to a file:
+Write the displayed trace continuously to a file:
 
 ```powershell
 .\traceIXM.ps1 -OutputPath C:\Temp\traceIXM.txt
 ```
+
+In interactive mode, press `W` to create a troubleshooting ZIP. The ZIP contains:
+
+```text
+traceIXM.txt
+sip.txt
+filter.json
+sessions.json
+```
+
+`traceIXM.txt` contains the captured events matching the active filter. `sip.txt` contains matching SIP/RVSIP evidence captured from the IX Messaging SIP logs. `filter.json` records the active filter and traceIXM version, and `sessions.json` records the current channel/session correlation state.
 
 Load mailbox metadata once from the IX Messaging SQL Anywhere database using SELECT-only queries:
 
@@ -251,6 +344,9 @@ Then replace the Windows copy of `traceIXM.ps1` with the updated file.
 - `CALL END` is finalized only from a correlated SIP `BYE`/`CANCEL`; Voice Server Event 28 is intentionally ignored because it can occur mid-session.
 - Friendly menu-action names are not inferred.
 - Some SIP/MWI events do not contain a channel number and are therefore displayed as `CH --` unless reliable correlation is available.
+- SIP view is log-based; version 1.2.0 does not start Wireshark/tshark or create a network PCAP.
+- SIP Call-ID and IP filters can only match information actually present in the IX Messaging SIP/RVSIP log lines.
+- Interactive hotkeys require a normal Windows console. In redirected/remoting hosts where `Console.KeyAvailable` is unavailable, live tracing still works and Ctrl+C remains available.
 - DBCOM synchronization may occur asynchronously after the originating call.
 - `EXT SYNC OK` confirms the IXM synchronization record, not final recipient inbox delivery.
 - `Status` and `All` modes are intentionally verbose.
