@@ -89,11 +89,14 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.2.0'
+$script:TraceIxmVersion = '1.2.1'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
 $script:QuitRequested = $false
+$script:UiDirty = $true
+$script:LastUiRefresh = [datetime]::MinValue
+$script:UiRefreshMilliseconds = 500
 $script:CaptureStarted = Get-Date
 $script:CapturedEvents = New-Object System.Collections.Generic.List[object]
 $script:MaxCapturedEvents = 10000
@@ -1976,6 +1979,7 @@ function Show-IxmFilterMenu {
     Write-Host ' [7] Text match'
     Write-Host ' [8] Keep current filter'
     Write-Host ' [9] No Filter - Show All'
+    Write-Host ' [0] Start / continue with no filter'
     Write-Host ''
 
     $Choice = Read-Host 'Selection'
@@ -2029,6 +2033,11 @@ function Show-IxmFilterMenu {
         }
         '8' { }
         '9' {
+            Clear-IxmInteractiveFilters
+            Set-Variable -Name Channel -Scope Script -Value 0
+            Set-Variable -Name Match -Scope Script -Value ''
+        }
+        '0' {
             Clear-IxmInteractiveFilters
             Set-Variable -Name Channel -Scope Script -Value 0
             Set-Variable -Name Match -Scope Script -Value ''
@@ -2196,42 +2205,168 @@ function Test-IxmViewAllowsEvent {
     return $true
 }
 
-function Show-IxmRecentSipTraffic {
-    Write-Host ''
-    Write-Host ('=' * 92) -ForegroundColor DarkGray
-    Write-Host ('SIP VIEW - {0}' -f (Get-IxmFilterDescription)) -ForegroundColor Cyan
-    Write-Host ('=' * 92) -ForegroundColor DarkGray
-
-    $Items = @(
+function Get-IxmMatchingCapturedEvents {
+    return @(
         $script:CapturedEvents |
-            Where-Object {
-                ($_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP') -and
-                (Test-IxmEventMatchesFilter -Event $_)
-            } |
-            Select-Object -Last 100
+            Where-Object { Test-IxmEventMatchesFilter -Event $_ }
     )
+}
 
-    if ($Items.Count -eq 0) {
-        Write-Host 'No matching SIP traffic captured yet.' -ForegroundColor DarkGray
-        return
+function Get-IxmConsoleWidth {
+    try {
+        $Width = [Console]::WindowWidth
+        if ($Width -lt 80) { return 80 }
+        return $Width
     }
-
-    foreach ($Item in $Items) {
-        Write-Host (Format-IxmEventLine -Event $Item) -ForegroundColor Gray
+    catch {
+        return 120
     }
 }
 
-function Show-IxmCallSummary {
-    Write-Host ''
-    Write-Host ('=' * 92) -ForegroundColor DarkGray
-    Write-Host 'IXM CALL SUMMARY' -ForegroundColor Cyan
-    Write-Host ('=' * 92) -ForegroundColor DarkGray
-    Write-Host ('{0,-5} {1,-15} {2,-15} {3,-15} {4,-10} {5}' -f 'CH','CALLER','CALLED','MAILBOX','ACTIVE','LAST EVENT') -ForegroundColor White
-
-    foreach ($State in @($script:ChannelStates.Values | Sort-Object Channel)) {
-        Write-Host ('{0,-5} {1,-15} {2,-15} {3,-15} {4,-10} {5}' -f
-            $State.Channel,$State.CallerID,$State.Called,$State.Mailbox,$State.CallActive,$State.LastEvent)
+function Get-IxmConsoleHeight {
+    try {
+        $Height = [Console]::WindowHeight
+        if ($Height -lt 24) { return 24 }
+        return $Height
     }
+    catch {
+        return 40
+    }
+}
+
+function Format-IxmUiText {
+    param(
+        [AllowEmptyString()][string]$Text,
+        [int]$Width
+    )
+
+    if ($Width -lt 1) { return '' }
+    if ($null -eq $Text) { $Text = '' }
+
+    if ($Text.Length -gt $Width) {
+        if ($Width -le 3) { return $Text.Substring(0,$Width) }
+        return ($Text.Substring(0,$Width - 3) + '...')
+    }
+
+    return $Text.PadRight($Width)
+}
+
+function Write-IxmUiLine {
+    param(
+        [AllowEmptyString()][string]$Text = '',
+        [ConsoleColor]$Color = [ConsoleColor]::Gray
+    )
+
+    $Width = (Get-IxmConsoleWidth) - 1
+    Write-Host (Format-IxmUiText -Text $Text -Width $Width) -ForegroundColor $Color
+}
+
+function Get-IxmActiveCallStates {
+    return @(
+        $script:ChannelStates.Values |
+            Where-Object { $_.CallActive } |
+            Sort-Object Channel
+    )
+}
+
+function Show-IxmInteractiveScreen {
+    param([switch]$Force)
+
+    if (-not $script:InteractiveMode) { return }
+
+    $Now = Get-Date
+    if (-not $Force -and -not $script:UiDirty -and
+        (($Now - $script:LastUiRefresh).TotalMilliseconds -lt $script:UiRefreshMilliseconds)) {
+        return
+    }
+
+    if (-not $Force -and
+        (($Now - $script:LastUiRefresh).TotalMilliseconds -lt $script:UiRefreshMilliseconds)) {
+        return
+    }
+
+    $script:LastUiRefresh = $Now
+    $script:UiDirty = $false
+
+    $Matching = @(Get-IxmMatchingCapturedEvents)
+    $ActiveCalls = @(Get-IxmActiveCallStates)
+    $SipCount = @($Matching | Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }).Count
+    $Height = Get-IxmConsoleHeight
+
+    Clear-Host
+    Write-IxmUiLine -Text ('traceIXM {0}  |  Avaya IX Messaging Interactive Trace' -f $script:TraceIxmVersion) -Color Cyan
+    Write-IxmUiLine -Text ('VIEW: {0,-7}  FILTER: {1}' -f $script:InteractiveView,(Get-IxmFilterDescription)) -Color White
+    Write-IxmUiLine -Text ('CAPTURED: {0}   MATCHED: {1}   SIP: {2}   ACTIVE CALLS: {3}   STARTED: {4}' -f
+        $script:CapturedEvents.Count,$Matching.Count,$SipCount,$ActiveCalls.Count,$script:CaptureStarted.ToString('HH:mm:ss')) -Color DarkGray
+    Write-IxmUiLine -Text ('[1] Summary   [2] SIP   [3] Calls   [F] Filter   [W] Write ZIP   [H] Help   [Q] Quit') -Color Green
+    Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
+
+    switch ($script:InteractiveView) {
+        'Calls' {
+            Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f
+                'CH','CALLER','CALLED','MAILBOX','ACTIVE','LAST EVENT') -Color White
+            Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
+
+            $States = @($script:ChannelStates.Values | Sort-Object Channel)
+            if ($States.Count -eq 0) {
+                Write-IxmUiLine -Text 'No call/session state has been observed yet.' -Color DarkGray
+            }
+            else {
+                $MaxRows = [math]::Max(1,$Height - 8)
+                foreach ($State in @($States | Select-Object -Last $MaxRows)) {
+                    Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f
+                        $State.Channel,$State.CallerID,$State.Called,$State.Mailbox,$State.CallActive,$State.LastEvent) -Color Gray
+                }
+            }
+        }
+
+        'SIP' {
+            Write-IxmUiLine -Text 'SIP / RVSIP - most recent matching signaling' -Color Cyan
+            Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
+
+            $Items = @(
+                $Matching |
+                    Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }
+            )
+
+            if ($Items.Count -eq 0) {
+                Write-IxmUiLine -Text 'No matching SIP traffic captured yet.' -Color DarkGray
+            }
+            else {
+                $MaxRows = [math]::Max(1,$Height - 8)
+                foreach ($Item in @($Items | Select-Object -Last $MaxRows)) {
+                    Write-IxmUiLine -Text (Format-IxmEventLine -Event $Item) -Color Gray
+                }
+            }
+        }
+
+        default {
+            Write-IxmUiLine -Text 'SUMMARY - most recent matching correlated events' -Color Cyan
+            Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
+
+            if ($Matching.Count -eq 0) {
+                Write-IxmUiLine -Text 'Waiting for matching IX Messaging activity...' -Color DarkGray
+            }
+            else {
+                $MaxRows = [math]::Max(1,$Height - 8)
+                foreach ($Item in @($Matching | Select-Object -Last $MaxRows)) {
+                    Write-IxmUiLine -Text (Format-IxmEventLine -Event $Item) -Color Gray
+                }
+            }
+        }
+    }
+}
+
+function Show-IxmRecentSipTraffic {
+    $script:InteractiveView = 'SIP'
+    $script:UiDirty = $true
+    Show-IxmInteractiveScreen -Force
+}
+
+function Show-IxmCallSummary {
+    $script:InteractiveView = 'Calls'
+    $script:UiDirty = $true
+    Show-IxmInteractiveScreen -Force
 }
 
 function Export-IxmCapture {
@@ -2300,18 +2435,14 @@ function Export-IxmCapture {
 }
 
 function Show-IxmInteractiveHelp {
+    Clear-Host
+    Write-Host ('traceIXM {0} - Interactive Help' -f $script:TraceIxmVersion) -ForegroundColor Cyan
     Write-Host ''
-    Write-Host 'Interactive keys:' -ForegroundColor Cyan
-    Write-Host '  F  Change filter'
-    Write-Host '  S  Toggle Summary / SIP view'
-    Write-Host '  C  Show call summary'
-    Write-Host '  W  Write current filtered capture to ZIP'
-    Write-Host '  H  Show this help'
-    Write-Host '  Q  Quit'
-    Write-Host ''
-}
-
-function Invoke-IxmInteractiveKeys {
+    Write-Host 'Views:' -ForegroundColor White
+    Write-Host '  1  Summary - correlated IXM activity'
+    Write-Host '  2  SIP     - SIP/RVSIP signaling'
+    Write-Host '  3  Calls   - channel/session table'
+  function Invoke-IxmInteractiveKeys {
     if (-not $script:InteractiveMode) { return }
 
     try {
@@ -2319,23 +2450,51 @@ function Invoke-IxmInteractiveKeys {
             $Key = [Console]::ReadKey($true)
 
             switch ($Key.Key) {
+                'D1' {
+                    $script:InteractiveView = 'Summary'
+                    $script:UiDirty = $true
+                }
+                'NumPad1' {
+                    $script:InteractiveView = 'Summary'
+                    $script:UiDirty = $true
+                }
+                'D2' {
+                    $script:InteractiveView = 'SIP'
+                    $script:UiDirty = $true
+                }
+                'NumPad2' {
+                    $script:InteractiveView = 'SIP'
+                    $script:UiDirty = $true
+                }
+                'D3' {
+                    $script:InteractiveView = 'Calls'
+                    $script:UiDirty = $true
+                }
+                'NumPad3' {
+                    $script:InteractiveView = 'Calls'
+                    $script:UiDirty = $true
+                }
                 'F' {
+                    Clear-Host
                     Show-IxmFilterMenu
-                    Write-Host ('Live filter: {0}' -f (Get-IxmFilterDescription)) -ForegroundColor Green
+                    $script:UiDirty = $true
+                    Show-IxmInteractiveScreen -Force
                 }
                 'S' {
                     if ($script:InteractiveView -eq 'SIP') {
                         $script:InteractiveView = 'Summary'
-                        Write-Host 'View: SUMMARY' -ForegroundColor Green
                     }
                     else {
                         $script:InteractiveView = 'SIP'
-                        Show-IxmRecentSipTraffic
-                        Write-Host 'View: SIP (press S to return to Summary)' -ForegroundColor Green
                     }
+                    $script:UiDirty = $true
                 }
-                'C' { Show-IxmCallSummary }
+                'C' {
+                    $script:InteractiveView = 'Calls'
+                    $script:UiDirty = $true
+                }
                 'W' {
+                    Clear-Host
                     $Suggested = if (Test-Path -LiteralPath 'C:\Temp' -PathType Container) {
                         Join-Path 'C:\Temp' ('traceIXM-{0}.zip' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
                     }
@@ -2346,8 +2505,13 @@ function Invoke-IxmInteractiveKeys {
                     $Entered = Read-Host ('Capture file [{0}]' -f $Suggested)
                     if ([string]::IsNullOrWhiteSpace($Entered)) { $Entered = $Suggested }
                     [void](Export-IxmCapture -DestinationPath $Entered)
+                    $script:UiDirty = $true
+                    Start-Sleep -Milliseconds 500
+                    Show-IxmInteractiveScreen -Force
                 }
-                'H' { Show-IxmInteractiveHelp }
+                'H' {
+                    Show-IxmInteractiveHelp
+                }
                 'Q' {
                     $script:QuitRequested = $true
                     return
@@ -2476,7 +2640,7 @@ Write-Host ('DBCOM logs   : {0}' -f (Join-Path (Split-Path -Parent $ResolvedLogR
 Write-Host ('Mode         : {0}' -f $Mode)
 Write-Host ('Filter       : {0}' -f (Get-IxmFilterDescription))
 if ($script:InteractiveMode) {
-    Write-Host 'Interactive  : F=Filter  S=SIP  C=Calls  W=Write  H=Help  Q=Quit'
+    Write-Host 'Interactive  : 1=Summary  2=SIP  3=Calls  F=Filter  W=Write  H=Help  Q=Quit'
 }
 if ($Mode -eq 'Summary') {
     Write-Host 'View         : correlated operator trace'
@@ -2518,10 +2682,15 @@ foreach ($Source in $Sources) {
 
 $script:InitialScanComplete = $true
 
-Write-Host ''
-Write-Host 'Following new activity. Press Ctrl+C to stop.' -ForegroundColor Green
-Write-Host ('{0,-12} {1,-7} {2,-7} {3,-18} {4}' -f 'TIME','SOURCE','CHANNEL','EVENT','DETAIL') -ForegroundColor White
-Write-Host ('-' * 120) -ForegroundColor DarkGray
+if ($script:InteractiveMode) {
+    Show-IxmInteractiveScreen -Force
+}
+else {
+    Write-Host ''
+    Write-Host 'Following new activity. Press Ctrl+C to stop.' -ForegroundColor Green
+    Write-Host ('{0,-12} {1,-7} {2,-7} {3,-18} {4}' -f 'TIME','SOURCE','CHANNEL','EVENT','DETAIL') -ForegroundColor White
+    Write-Host ('-' * 120) -ForegroundColor DarkGray
+}
 
 while (-not $script:QuitRequested) {
     foreach ($Source in $Sources) {
@@ -2539,8 +2708,18 @@ while (-not $script:QuitRequested) {
                 foreach ($Event in $Events) {
                     Add-IxmCapturedEvent -Event $Event
 
-                    if ((Test-TraceEventFilter -Event $Event) -and (Test-IxmViewAllowsEvent -Event $Event)) {
-                        Write-TraceEvent -Event $Event
+                    if (Test-TraceEventFilter -Event $Event) {
+                        if ($script:InteractiveMode) {
+                            $script:UiDirty = $true
+
+                            if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                                $Line = Format-IxmEventLine -Event $Event
+                                Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                            }
+                        }
+                        elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                            Write-TraceEvent -Event $Event
+                        }
                     }
                 }
             }
@@ -2562,6 +2741,7 @@ while (-not $script:QuitRequested) {
     }
 
     Invoke-IxmInteractiveKeys
+    Show-IxmInteractiveScreen
     Start-Sleep -Milliseconds $PollMilliseconds
 }
 
