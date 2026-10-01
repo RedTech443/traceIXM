@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.1
+
+- Reworked interactive mode into a persistent console UI instead of a continuously scrolling trace.
+- Added dedicated Summary, SIP, and Calls screens selectable with `1`, `2`, and `3`.
+- Added a persistent header showing the current filter, view, captured/matched event counts, SIP count, active-call count, and capture start time.
+- Summary and SIP screens automatically show the most recent rows that fit the current console height.
+- Calls screen displays the current per-channel caller/called/mailbox/session state.
+- Existing `S` and `C` shortcuts remain available as aliases.
+- Added explicit startup selection `0` for starting/continuing with no filter.
+- Preserved non-interactive command-line behavior and capture export.
+
 ## 1.2.0
 
 - Added a traceSM-style interactive startup filter menu.
