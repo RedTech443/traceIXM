@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.1
+
+- Added a fixed-header scrollable viewport to Summary, SIP, and Calls.
+- Added Up/Down one-line scrolling and PageUp/PageDown page scrolling.
+- Added Home for the oldest entries and End to return to live-follow mode.
+- New trace events continue to be captured while older entries are being reviewed without moving the viewport.
+- Added a SCROLL indicator to the locked header.
+- Clear and filter changes return all views to live-follow mode.
+
 ## 1.3.0
 
 - Clean rebuild note for 1.3.0: script content was rebuilt from the clean 1.2.9 commit using literal-safe patching to prevent PowerShell regex `# Changelog
