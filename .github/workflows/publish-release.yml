@@ -1,0 +1,79 @@
+name: Publish traceIXM Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Read traceIXM version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n "s/^\$script:TraceIxmVersion = '\([^']*\)'/\1/p" traceIXM.ps1 | head -n 1)"
+          if [ -z "$VERSION" ]; then
+            echo "Unable to determine TraceIxmVersion from traceIXM.ps1" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          cp traceIXM.ps1 "traceIXM-v${VERSION}.ps1"
+          zip -j "traceIXM-v${VERSION}.zip" "traceIXM-v${VERSION}.ps1"
+          sha256sum "traceIXM-v${VERSION}.ps1" "traceIXM-v${VERSION}.zip" > "SHA256SUMS-v${VERSION}.txt"
+
+          awk -v version="$VERSION" '
+            $0 == "## " version { capture=1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            printf "traceIXM %s\n" "$VERSION" > release-notes.md
+          fi
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "traceIXM ${VERSION}" \
+              --notes-file release-notes.md
+
+            gh release upload "$TAG" \
+              "traceIXM-v${VERSION}.ps1" \
+              "traceIXM-v${VERSION}.zip" \
+              "SHA256SUMS-v${VERSION}.txt" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "traceIXM-v${VERSION}.ps1" \
+              "traceIXM-v${VERSION}.zip" \
+              "SHA256SUMS-v${VERSION}.txt" \
+              --target "$GITHUB_SHA" \
+              --title "traceIXM ${VERSION}" \
+              --notes-file release-notes.md
+          fi
