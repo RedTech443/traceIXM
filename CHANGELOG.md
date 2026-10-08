@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.8
+
+- Fixed a PowerShell parser error in the `Write-TraceEvent` color switch.
+- Rebuilt the complete event-color switch instead of patching the damaged line.
+- Restored separate clauses for `GREETING HANGUP`, `MESSAGE TOO SHORT`, `RE-RECORDING`, `ROUTE`, and `STATE`.
+- No call-classification behavior was removed; the 1.2.7 too-short/retry logic remains intact.
+
 ## 1.2.7
 
 - Added explicit `MESSAGE TOO SHORT` detection from IXM State 82.
