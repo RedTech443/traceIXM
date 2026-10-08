@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.6
+
+- Added mailbox greeting detection from `State 70 Data: Play Greeting <mailbox>`.
+- Added `GREETING` and `GREETING HANGUP` live events.
+- Added `HUNG UP DURING GREETING` when IXM logs `rAnsMbxGHangup` before recording begins.
+- Retained `HUNG UP BEFORE RECORDING` as a fallback when a mailbox was reached but the explicit greeting-hangup marker is unavailable.
+- Repaired the malformed `CALL END` / `ROUTE` event-color switch line present in 1.2.5.
+- Greeting classification remains evidence-based and does not infer dead air.
+
 ## 1.2.5
 
 - Added high-confidence `CALL RESULT` classification at call end.
