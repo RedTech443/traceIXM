@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.5
+
+- Added high-confidence `CALL RESULT` classification at call end.
+- Added `VOICEMAIL SAVED`, `RECORDING ENDED - NO MESSAGE SAVED`, `RECORDING STARTED - NO MESSAGE SAVED`, `HUNG UP BEFORE RECORDING`, `SUBSCRIBER SESSION`, and `CALL ENDED - OUTCOME UNKNOWN` outcomes.
+- Added per-call mailbox/recording/message-save state tracking from IXM application events.
+- Fixed stale mailbox/message metadata when IXM reuses a channel for a new call.
+- Added recording duration to the result when IXM logs `Actual Message Play Time`.
+- Updated the interactive Calls view to retain the last completed call result for each channel.
+- The classifier deliberately does not infer dead air or audio quality.
+
 ## 1.2.4
 
 - Added a separate deduplicated Summary event history so the interactive Summary pane no longer repeats identical IXM events such as duplicate INMSGSTART/INMSGEND, media timing, or recording records.
