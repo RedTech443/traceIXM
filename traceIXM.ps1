@@ -89,7 +89,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.3.0'
+$script:TraceIxmVersion = '1.3.1'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
@@ -99,6 +99,11 @@ $script:LastUiRefresh = [datetime]::MinValue
 $script:UiRefreshMilliseconds = 500
 $script:LastUiLineCount = 0
 $script:CurrentUiLineCount = 0
+$script:ScrollTop = @{
+    Summary = -1
+    SIP = -1
+    Calls = -1
+}
 $script:CaptureStarted = Get-Date
 $script:CapturedEvents = New-Object System.Collections.Generic.List[object]
 $script:SummaryEvents = New-Object System.Collections.Generic.List[object]
@@ -2604,10 +2609,118 @@ function Clear-IxmInteractiveHistory {
     $script:SummaryEvents.Clear()
     $script:SummaryStoreSignatures.Clear()
     $script:RecentSummaryEvents.Clear()
+    $script:ScrollTop['Summary'] = -1
+    $script:ScrollTop['SIP'] = -1
+    $script:ScrollTop['Calls'] = -1
     $script:CaptureStarted = Get-Date
 
     Reset-IxmInteractiveCanvas
     Show-IxmInteractiveScreen -Force
+}
+
+function Get-IxmViewportItems {
+    param(
+        [Parameter(Mandatory)][object[]]$Items,
+        [Parameter(Mandatory)][int]$PageSize,
+        [Parameter(Mandatory)][ValidateSet('Summary','SIP','Calls')][string]$ViewName
+    )
+
+    $Count = @($Items).Count
+    if ($Count -eq 0) { return @() }
+
+    $MaxStart = [math]::Max(0,$Count - $PageSize)
+    $Top = [int]$script:ScrollTop[$ViewName]
+
+    if ($Top -lt 0) {
+        $Start = $MaxStart
+    }
+    else {
+        $Start = [math]::Max(0,[math]::Min($Top,$MaxStart))
+        $script:ScrollTop[$ViewName] = $Start
+    }
+
+    return @($Items | Select-Object -Skip $Start -First $PageSize)
+}
+
+function Get-IxmScrollStatus {
+    param(
+        [Parameter(Mandatory)][int]$ItemCount,
+        [Parameter(Mandatory)][int]$PageSize,
+        [Parameter(Mandatory)][ValidateSet('Summary','SIP','Calls')][string]$ViewName
+    )
+
+    if ([int]$script:ScrollTop[$ViewName] -lt 0) { return 'LIVE' }
+    if ($ItemCount -le 0) { return '1-0/0' }
+
+    $MaxStart = [math]::Max(0,$ItemCount - $PageSize)
+    $Top = [math]::Max(0,[math]::Min([int]$script:ScrollTop[$ViewName],$MaxStart))
+    $script:ScrollTop[$ViewName] = $Top
+    $End = [math]::Min($ItemCount,$Top + $PageSize)
+
+    return ('{0}-{1}/{2}' -f ($Top + 1),$End,$ItemCount)
+}
+
+function Get-IxmCurrentViewItems {
+    switch ($script:InteractiveView) {
+        'Calls' {
+            return @($script:ChannelStates.Values | Sort-Object Channel)
+        }
+        'SIP' {
+            return @(Get-IxmMatchingCapturedEvents | Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' })
+        }
+        default {
+            return @(Get-IxmMatchingSummaryEvents)
+        }
+    }
+}
+
+function Move-IxmViewport {
+    param(
+        [int]$Lines = 0,
+        [switch]$Page,
+        [switch]$ToEnd,
+        [switch]$ToHome
+    )
+
+    if (-not $script:InteractiveMode) { return }
+
+    $ViewName = [string]$script:InteractiveView
+    $Items = @(Get-IxmCurrentViewItems)
+    $PageSize = [math]::Max(1,(Get-IxmConsoleHeight) - 8)
+    $Count = $Items.Count
+    $MaxStart = [math]::Max(0,$Count - $PageSize)
+
+    if ($ToEnd -or $MaxStart -eq 0) {
+        $script:ScrollTop[$ViewName] = -1
+        $script:UiDirty = $true
+        return
+    }
+
+    if ($ToHome) {
+        $script:ScrollTop[$ViewName] = 0
+        $script:UiDirty = $true
+        return
+    }
+
+    $Current = [int]$script:ScrollTop[$ViewName]
+    if ($Current -lt 0) { $Current = $MaxStart }
+
+    $Step = $Lines
+    if ($Page) {
+        $Direction = if ($Lines -lt 0) { -1 } else { 1 }
+        $Step = $Direction * $PageSize
+    }
+
+    $NewTop = $Current + $Step
+
+    if ($NewTop -ge $MaxStart) {
+        $script:ScrollTop[$ViewName] = -1
+    }
+    else {
+        $script:ScrollTop[$ViewName] = [math]::Max(0,$NewTop)
+    }
+
+    $script:UiDirty = $true
 }
 
 function Show-IxmInteractiveScreen {
@@ -2616,13 +2729,11 @@ function Show-IxmInteractiveScreen {
     if (-not $script:InteractiveMode) { return }
 
     $Now = Get-Date
-    if (-not $Force -and -not $script:UiDirty -and
-        (($Now - $script:LastUiRefresh).TotalMilliseconds -lt $script:UiRefreshMilliseconds)) {
+    if (-not $Force -and -not $script:UiDirty -and (($Now - $script:LastUiRefresh).TotalMilliseconds -lt $script:UiRefreshMilliseconds)) {
         return
     }
 
-    if (-not $Force -and
-        (($Now - $script:LastUiRefresh).TotalMilliseconds -lt $script:UiRefreshMilliseconds)) {
+    if (-not $Force -and (($Now - $script:LastUiRefresh).TotalMilliseconds -lt $script:UiRefreshMilliseconds)) {
         return
     }
 
@@ -2632,11 +2743,20 @@ function Show-IxmInteractiveScreen {
     $MatchingRaw = @(Get-IxmMatchingCapturedEvents)
     $Matching = @(Get-IxmMatchingSummaryEvents)
     $ActiveCalls = @(Get-IxmActiveCallStates)
-    $SipCount = @($MatchingRaw | Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }).Count
+    $SipItems = @($MatchingRaw | Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' })
+    $States = @($script:ChannelStates.Values | Sort-Object Channel)
+    $SipCount = $SipItems.Count
     $Height = Get-IxmConsoleHeight
+    $MaxRows = [math]::Max(1,$Height - 8)
 
-    # Redraw in place instead of Clear-Host. Clearing the console on every
-    # refresh causes a visible flash/blink in Windows PowerShell.
+    switch ($script:InteractiveView) {
+        'Calls' { $ViewItemCount = $States.Count }
+        'SIP' { $ViewItemCount = $SipItems.Count }
+        default { $ViewItemCount = $Matching.Count }
+    }
+
+    $ScrollStatus = Get-IxmScrollStatus -ItemCount $ViewItemCount -PageSize $MaxRows -ViewName $script:InteractiveView
+
     $PreviousLineCount = $script:LastUiLineCount
     $script:CurrentUiLineCount = 0
 
@@ -2644,82 +2764,62 @@ function Show-IxmInteractiveScreen {
         [Console]::CursorVisible = $false
         [Console]::SetCursorPosition(0,0)
     }
-    catch {
-        # Fall back to normal console output if cursor positioning is not
-        # available in the current host.
-    }
+    catch {}
 
     Write-IxmUiLine -Text ('traceIXM {0}  |  Avaya IX Messaging Interactive Trace' -f $script:TraceIxmVersion) -Color Cyan
-    Write-IxmUiLine -Text ('VIEW: {0,-7}  FILTER: {1}' -f $script:InteractiveView,(Get-IxmFilterDescription)) -Color White
-    Write-IxmUiLine -Text ('CAPTURED: {0}   MATCHED: {1}   SIP: {2}   ACTIVE CALLS: {3}   STARTED: {4}' -f
-        $script:CapturedEvents.Count,$Matching.Count,$SipCount,$ActiveCalls.Count,$script:CaptureStarted.ToString('HH:mm:ss')) -Color DarkGray
-    Write-IxmUiLine -Text ('[1] Summary   [2] SIP   [3] Calls   [F] Filter   [C] Clear   [W] Write ZIP   [H] Help   [Q] Quit') -Color Green
+    Write-IxmUiLine -Text ('VIEW: {0,-7}  SCROLL: {1,-14}  FILTER: {2}' -f $script:InteractiveView,$ScrollStatus,(Get-IxmFilterDescription)) -Color White
+    Write-IxmUiLine -Text ('CAPTURED: {0}   MATCHED: {1}   SIP: {2}   ACTIVE CALLS: {3}   STARTED: {4}' -f $script:CapturedEvents.Count,$Matching.Count,$SipCount,$ActiveCalls.Count,$script:CaptureStarted.ToString('HH:mm:ss')) -Color DarkGray
+    Write-IxmUiLine -Text ('[1] Summary [2] SIP [3] Calls  [UP/DN] Line [PgUp/PgDn] Page [End] Live  [F] Filter [C] Clear [W] ZIP [H] Help [Q] Quit') -Color Green
     Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
 
     switch ($script:InteractiveView) {
         'Calls' {
-            Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f
-                'CH','CALLER','CALLED','MAILBOX','ACTIVE','RESULT / LAST EVENT') -Color White
+            Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f 'CH','CALLER','CALLED','MAILBOX','ACTIVE','RESULT / LAST EVENT') -Color White
             Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
 
-            $States = @($script:ChannelStates.Values | Sort-Object Channel)
             if ($States.Count -eq 0) {
                 Write-IxmUiLine -Text 'No call/session state has been observed yet.' -Color DarkGray
             }
             else {
-                $MaxRows = [math]::Max(1,$Height - 8)
-                foreach ($State in @($States | Select-Object -Last $MaxRows)) {
-                    $DisplayOutcome = if (-not $State.CallActive -and -not [string]::IsNullOrWhiteSpace($State.LastCallResult)) {
-                        $State.LastCallResult
-                    }
-                    else {
-                        $State.LastEvent
-                    }
-
-                    Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f
-                        $State.Channel,$State.CallerID,$State.Called,$State.Mailbox,$State.CallActive,$DisplayOutcome) -Color Gray
+                $Visible = @(Get-IxmViewportItems -Items $States -PageSize $MaxRows -ViewName 'Calls')
+                foreach ($State in $Visible) {
+                    $DisplayOutcome = if (-not $State.CallActive -and -not [string]::IsNullOrWhiteSpace($State.LastCallResult)) { $State.LastCallResult } else { $State.LastEvent }
+                    Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f $State.Channel,$State.CallerID,$State.Called,$State.Mailbox,$State.CallActive,$DisplayOutcome) -Color Gray
                 }
             }
         }
 
         'SIP' {
-            Write-IxmUiLine -Text 'SIP / RVSIP - most recent matching signaling' -Color Cyan
+            Write-IxmUiLine -Text 'SIP / RVSIP - matching signaling' -Color Cyan
             Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
 
-            $Items = @(
-                $MatchingRaw |
-                    Where-Object { $_.Source -eq 'SIP' -or $_.Source -eq 'RVSIP' }
-            )
-
-            if ($Items.Count -eq 0) {
+            if ($SipItems.Count -eq 0) {
                 Write-IxmUiLine -Text 'No matching SIP traffic captured yet.' -Color DarkGray
             }
             else {
-                $MaxRows = [math]::Max(1,$Height - 8)
-                foreach ($Item in @($Items | Select-Object -Last $MaxRows)) {
+                $Visible = @(Get-IxmViewportItems -Items $SipItems -PageSize $MaxRows -ViewName 'SIP')
+                foreach ($Item in $Visible) {
                     Write-IxmUiLine -Text (Format-IxmEventLine -Event $Item) -Color Gray
                 }
             }
         }
 
         default {
-            Write-IxmUiLine -Text 'SUMMARY - most recent matching correlated events' -Color Cyan
+            Write-IxmUiLine -Text 'SUMMARY - matching correlated events' -Color Cyan
             Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
 
             if ($Matching.Count -eq 0) {
                 Write-IxmUiLine -Text 'Waiting for matching IX Messaging activity...' -Color DarkGray
             }
             else {
-                $MaxRows = [math]::Max(1,$Height - 8)
-                foreach ($Item in @($Matching | Select-Object -Last $MaxRows)) {
+                $Visible = @(Get-IxmViewportItems -Items $Matching -PageSize $MaxRows -ViewName 'Summary')
+                foreach ($Item in $Visible) {
                     Write-IxmUiLine -Text (Format-IxmEventLine -Event $Item) -Color Gray
                 }
             }
         }
     }
 
-    # If the new frame is shorter than the previous one, blank the leftover
-    # rows so stale lines from the old view do not remain on screen.
     if ($PreviousLineCount -gt $script:CurrentUiLineCount) {
         $Width = (Get-IxmConsoleWidth) - 1
         for ($i = $script:CurrentUiLineCount; $i -lt $PreviousLineCount; $i++) {
@@ -2822,12 +2922,16 @@ function Show-IxmInteractiveHelp {
     Write-Host '  3  Calls   - channel/session table'
     Write-Host ''
     Write-Host 'Controls:' -ForegroundColor White
-    Write-Host '  F  Change capture filter'
-    Write-Host '  S  Toggle Summary / SIP'
-    Write-Host '  C  Clear displayed/captured history (filter and active call state are preserved)'
-    Write-Host '  W  Write current filtered capture to ZIP'
-    Write-Host '  H  Show this help'
-    Write-Host '  Q  Quit'
+    Write-Host '  Up/Down       Scroll one line through the current view'
+    Write-Host '  PageUp/Down   Scroll one page'
+    Write-Host '  Home          Jump to oldest available entries'
+    Write-Host '  End           Return to LIVE follow mode'
+    Write-Host '  F             Change capture filter'
+    Write-Host '  S             Toggle Summary / SIP'
+    Write-Host '  C             Clear history (filter and active call state are preserved)'
+    Write-Host '  W             Write current filtered capture to ZIP'
+    Write-Host '  H             Show this help'
+    Write-Host '  Q             Quit'
     Write-Host ''
     Write-Host 'Press any key to return...' -ForegroundColor DarkGray
 
@@ -2874,9 +2978,30 @@ function Invoke-IxmInteractiveKeys {
                     $script:InteractiveView = 'Calls'
                     $script:UiDirty = $true
                 }
+                'UpArrow' {
+                    Move-IxmViewport -Lines -1
+                }
+                'DownArrow' {
+                    Move-IxmViewport -Lines 1
+                }
+                'PageUp' {
+                    Move-IxmViewport -Lines -1 -Page
+                }
+                'PageDown' {
+                    Move-IxmViewport -Lines 1 -Page
+                }
+                'Home' {
+                    Move-IxmViewport -ToHome
+                }
+                'End' {
+                    Move-IxmViewport -ToEnd
+                }
                 'F' {
                     Clear-Host
                     Show-IxmFilterMenu
+                    $script:ScrollTop['Summary'] = -1
+                    $script:ScrollTop['SIP'] = -1
+                    $script:ScrollTop['Calls'] = -1
                     Reset-IxmInteractiveCanvas
                     Show-IxmInteractiveScreen -Force
                 }
