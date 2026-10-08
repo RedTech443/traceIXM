@@ -89,7 +89,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.2.5'
+$script:TraceIxmVersion = '1.2.6'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
@@ -495,6 +495,8 @@ function Get-ChannelState {
             IxMessageID = ''
             LastSavedTime = [datetime]::MinValue
             MailboxReached = $false
+            GreetingStarted = $false
+            GreetingHangup = $false
             RecordingStarted = $false
             RecordingEnded = $false
             MessageSaved = $false
@@ -661,11 +663,17 @@ function Complete-IxmPendingCallEnd {
     elseif ($State.MessageSaved) {
         $CallResult = 'VOICEMAIL SAVED'
     }
+    elseif ($State.GreetingHangup -and -not $State.RecordingStarted) {
+        $CallResult = 'HUNG UP DURING GREETING'
+    }
     elseif ($State.RecordingStarted -and $State.RecordingEnded) {
         $CallResult = 'RECORDING ENDED - NO MESSAGE SAVED'
     }
     elseif ($State.RecordingStarted) {
         $CallResult = 'RECORDING STARTED - NO MESSAGE SAVED'
+    }
+    elseif ($State.GreetingStarted -and -not $State.RecordingStarted) {
+        $CallResult = 'HUNG UP BEFORE RECORDING'
     }
     elseif ($State.MailboxReached) {
         $CallResult = 'HUNG UP BEFORE RECORDING'
@@ -746,6 +754,8 @@ function Reset-IxmCallState {
     $State.SensitiveInput = $false
     $State.InputContext = ''
     $State.MailboxReached = $false
+    $State.GreetingStarted = $false
+    $State.GreetingHangup = $false
     $State.RecordingStarted = $false
     $State.RecordingEnded = $false
     $State.MessageSaved = $false
@@ -1434,6 +1444,8 @@ function Convert-IdmsLineToEvent {
             $State.IxMessageID = ''
             $State.LastSavedTime = [datetime]::MinValue
             $State.MailboxReached = $false
+            $State.GreetingStarted = $false
+            $State.GreetingHangup = $false
             $State.RecordingStarted = $false
             $State.RecordingEnded = $false
             $State.MessageSaved = $false
@@ -1559,6 +1571,7 @@ function Convert-InMsgXmlToEvent {
 
         if ($Command -eq 'INMSGSTART') {
             $State.MailboxReached = $true
+            $State.GreetingHangup = $false
             $State.RecordingStarted = $true
             $State.RecordingEnded = $false
         }
@@ -1843,6 +1856,38 @@ function Convert-LiveLineToEvents {
                 return (New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
                     -Event 'MSG COUNT' -Detail ('Mailbox={0}  UnreadVoice={1}' -f $Matches.Mailbox,$Matches.Count) -Raw $Line)
             }
+        }
+
+        # Mailbox greeting handling. IXM explicitly logs the greeting mailbox
+        # and a dedicated rAnsMbxGHangup statistic when a caller disconnects
+        # while still in the greeting path.
+        if ($null -ne $State -and
+            $Line -match '(?i)Chan\s*=\s*\d+\s+State\s+70\s+Data:\s+Play Greeting\s+(?<Mailbox>\d+)') {
+
+            $State.Mailbox = [string]$Matches.Mailbox
+            $State.MailboxReached = $true
+            $State.GreetingStarted = $true
+            $State.LastEvent = 'GREETING'
+            $State.LastUpdate = Get-Date
+
+            return (New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
+                -Event 'GREETING' -Detail ('Playing mailbox greeting  Mailbox={0}' -f $State.Mailbox) -Raw $Line)
+        }
+
+        if ($null -ne $State -and $Line -match '(?i)rAnsMbxGHangup') {
+            $State.MailboxReached = $true
+            $State.GreetingStarted = $true
+            $State.GreetingHangup = $true
+            $State.LastEvent = 'GREETING HANGUP'
+            $State.LastUpdate = Get-Date
+
+            $GreetingDetail = 'Caller hung up during mailbox greeting'
+            if ($State.Mailbox) {
+                $GreetingDetail += ('  Mailbox={0}' -f $State.Mailbox)
+            }
+
+            return (New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
+                -Event 'GREETING HANGUP' -Detail $GreetingDetail -Raw $Line)
         }
 
         # Mailbox correlation.
@@ -2834,12 +2879,17 @@ function Write-TraceEvent {
         '^INMSGEND$'         { $Color = 'DarkGreen'; break }
         '^INVITE$'           { $Color = 'Green'; break }
         '^BYE$|^CANCEL$'     { $Color = 'Yellow'; break }
-        '^SIP [45]\d\d$'     { $Color = 'Red'; break }
+        '^SIP [45]\d\d$'   { $Color = 'Red'; break }
         '^VOICEMAIL SAVED$'  { $Color = 'Cyan'; break }
         '^MESSAGE ADD$'      { $Color = 'Cyan'; break }
         '^IDMS$'             { $Color = 'Magenta'; break }
         '^CALL START$'       { $Color = 'Green'; break }
-        '^CALL END        '^ROUTE$'            { $Color = 'Magenta'; break }
+        '^CALL END$'         { $Color = 'Yellow'; break }
+        '^CALL RESULT$'      { $Color = 'Cyan'; break }
+        '^CALL PATH$'        { $Color = 'Cyan'; break }
+        '^GREETING$'         { $Color = 'DarkCyan'; break }
+        '^GREETING HANGUP$'  { $Color = 'Yellow'; break }
+        '^ROUTE$'            { $Color = 'Magenta'; break }
         '^STATE$'            { $Color = 'Yellow'; break }
         '^MWI$'              { $Color = 'DarkCyan'; break }
         '^DTMF$'             { $Color = 'White'; break }
