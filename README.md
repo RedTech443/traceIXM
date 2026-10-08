@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.3.0**
+**1.3.1**
 
 PowerShell **5.1+**.
 
@@ -389,3 +389,15 @@ See [CHANGELOG.md](CHANGELOG.md).
 Starting with 1.3.0, SIP/RVSIP `BYE` and `CANCEL` are signaling evidence only and do not finalize the IX Messaging channel session. Final `CALL END` / `CALL RESULT` is driven by IXM's own `<CMD>CALLENDED</CMD>` event. This prevents a SIP leg from causing an early false call result while IXM continues through greeting, recording, or re-recording.
 
 In interactive mode, press `C` to clear the displayed/captured event history. The current filter and active channel state are preserved so in-progress calls continue to correlate correctly. The Calls view remains available with `3`.
+
+
+### Scrollable live viewport
+
+Starting with 1.3.1, Summary, SIP, and Calls use a fixed-header viewport. The top header stays locked while only the rows below it scroll.
+
+- `Up` / `Down`: scroll one line.
+- `PageUp` / `PageDown`: scroll one page.
+- `Home`: jump to the oldest available entries.
+- `End`: return to live-follow mode.
+
+When browsing older events, new trace activity continues to be captured without moving the viewport. The header shows `SCROLL: LIVE` while following new events, or the displayed range while reviewing history.
