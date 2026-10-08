@@ -89,7 +89,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.2.7'
+$script:TraceIxmVersion = '1.2.8'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
@@ -2945,7 +2945,11 @@ function Write-TraceEvent {
         '^CALL RESULT$'      { $Color = 'Cyan'; break }
         '^CALL PATH$'        { $Color = 'Cyan'; break }
         '^GREETING$'         { $Color = 'DarkCyan'; break }
-        '^GREETING HANGUP        '^STATE$'            { $Color = 'Yellow'; break }
+        '^GREETING HANGUP$'  { $Color = 'Yellow'; break }
+        '^MESSAGE TOO SHORT$' { $Color = 'Yellow'; break }
+        '^RE-RECORDING$'     { $Color = 'DarkYellow'; break }
+        '^ROUTE$'            { $Color = 'Magenta'; break }
+        '^STATE$'            { $Color = 'Yellow'; break }
         '^MWI$'              { $Color = 'DarkCyan'; break }
         '^DTMF$'             { $Color = 'White'; break }
         '^MENU$'             { $Color = 'Cyan'; break }
