@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.7
+
+- Added explicit `MESSAGE TOO SHORT` detection from IXM State 82.
+- Added `RE-RECORDING` detection from IXM State 87 and retry counting.
+- Added final result `NO MESSAGE - TOO SHORT` with `FailedAttempts` and `Retries`.
+- Fixed `INMSGEND` semantics: it no longer creates a recording start when no prior `INMSGSTART` was observed.
+- This fixes mailbox-greeting flows where IXM emits `INMSGEND` before any recording begins.
+- The classifier intentionally says `TOO SHORT`, not `SILENCE`, because the IXM log supports the former directly.
+
 ## 1.2.6
 
 - Added mailbox greeting detection from `State 70 Data: Play Greeting <mailbox>`.
