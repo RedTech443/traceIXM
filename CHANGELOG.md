@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.9
+
+- Rebuilt `traceIXM.ps1` from the last known-clean 1.2.4 script instead of patching the corrupted 1.2.5-1.2.8 file.
+- Reapplied the validated call-result classifier, greeting-hangup detection, too-short/re-record retry detection, stale channel-state reset, and Calls-view result display.
+- Fixed `INMSGEND` handling so it only closes an already-started recording.
+- Restored one clean `Write-TraceEvent` color switch with separate clauses for all current event types.
+- Verified the rebuilt file contains one script header, one `Write-TraceEvent` function, one call-end completion function, and one program-ending block.
+- Password/PIN DTMF remains always hidden.
+
 ## 1.2.8
 
 - Fixed a PowerShell parser error in the `Write-TraceEvent` color switch.
