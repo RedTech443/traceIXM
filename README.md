@@ -401,3 +401,14 @@ Starting with 1.3.1, Summary, SIP, and Calls use a fixed-header viewport. The to
 - `End`: return to live-follow mode.
 
 When browsing older events, new trace activity continues to be captured without moving the viewport. The header shows `SCROLL: LIVE` while following new events, or the displayed range while reviewing history.
+
+
+### GitHub Releases
+
+The current packaged download is published from the repository's **Releases** page. Each release includes:
+
+- a versioned PowerShell script (`traceIXM-vX.Y.Z.ps1`)
+- a ZIP package (`traceIXM-vX.Y.Z.zip`)
+- SHA-256 checksums
+
+The release version is read directly from `$script:TraceIxmVersion` in `traceIXM.ps1`.
