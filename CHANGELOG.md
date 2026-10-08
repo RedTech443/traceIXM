@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+- Changed the authoritative call-end boundary from SIP/RVSIP `BYE`/`CANCEL` to IXM's own `<CMD>CALLENDED</CMD>`.
+- SIP/RVSIP `BYE` and `CANCEL` remain visible as signaling events but no longer finalize the IXM application call.
+- Fixes false early `CALL END` / `HUNG UP BEFORE RECORDING` results when IXM continues into recording and re-record cycles.
+- Added `C` to clear displayed/captured history while preserving the current filter and active call state.
+- Calls view remains available with key `3`.
+- Added `CALLENDED` to the STATUS XML parser.
+
 ## 1.2.9
 
 - Rebuilt `traceIXM.ps1` from the last known-clean 1.2.4 script instead of patching the corrupted 1.2.5-1.2.8 file.
