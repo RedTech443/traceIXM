@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.2.6**
+**1.2.7**
 
 PowerShell **5.1+**.
 
@@ -279,13 +279,14 @@ Displays all supported sources with minimal suppression.
 
 ## Call outcome classification
 
-traceIXM 1.2.6 classifies each completed call using only IX Messaging events observed for that call. It does **not** claim to detect dead air or subjective audio quality.
+traceIXM 1.2.7 classifies each completed call using only IX Messaging events observed for that call. It does **not** claim to detect dead air or subjective audio quality.
 
 Possible `CALL RESULT` values:
 
 - `VOICEMAIL SAVED` — IXM logged a successful message add.
 - `RECORDING ENDED - NO MESSAGE SAVED` — recording started and ended, but no successful message add was observed.
 - `RECORDING STARTED - NO MESSAGE SAVED` — recording started, but the call ended before a normal end/save sequence was observed.
+- `NO MESSAGE - TOO SHORT` — IXM explicitly marked one or more recording attempts as `Message too Short`; the result includes failed-attempt and retry counts.
 - `HUNG UP DURING GREETING` — IXM logged its explicit greeting-hangup statistic before recording began.
 - `HUNG UP BEFORE RECORDING` — the call reached a mailbox but no recording session was observed and no more specific greeting-hangup marker was available.
 - `SUBSCRIBER SESSION` — the caller successfully logged into a mailbox.
