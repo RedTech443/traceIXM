@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.2.4**
+**1.2.5**
 
 PowerShell **5.1+**.
 
@@ -275,6 +275,31 @@ Follows EEAM helper and TSECMGR database/synchronization logs.
 ```
 
 Displays all supported sources with minimal suppression.
+
+
+## Call outcome classification
+
+traceIXM 1.2.5 classifies each completed call using only IX Messaging events observed for that call. It does **not** claim to detect dead air or subjective audio quality.
+
+Possible `CALL RESULT` values:
+
+- `VOICEMAIL SAVED` — IXM logged a successful message add.
+- `RECORDING ENDED - NO MESSAGE SAVED` — recording started and ended, but no successful message add was observed.
+- `RECORDING STARTED - NO MESSAGE SAVED` — recording started, but the call ended before a normal end/save sequence was observed.
+- `HUNG UP BEFORE RECORDING` — the call reached a mailbox, but no recording session was observed.
+- `SUBSCRIBER SESSION` — the caller successfully logged into a mailbox.
+- `CALL ENDED - OUTCOME UNKNOWN` — traceIXM captured the call but IXM did not provide enough application evidence for a more specific result.
+
+Example:
+
+```text
+08:17:03.120  STATUS  CH 4  CALL START    Called=18728 Caller=7749940426
+08:17:07.841  STATUS  CH 4  MAILBOX       Mailbox=18728 MbxID=427
+08:17:16.102  SIP     CH 4  CALL END      Duration=13.0 sec Mailbox=18728 Reason=BYE
+08:17:16.102  SIP     CH 4  CALL RESULT   HUNG UP BEFORE RECORDING  Mailbox=18728
+```
+
+The interactive **Calls** view retains the most recent completed result for each IXM channel until that channel is reused.
 
 ## Voicemail / external-sync correlation
 
