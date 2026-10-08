@@ -2,6 +2,10 @@
 
 ## 1.3.0
 
+- Clean rebuild note for 1.3.0: script content was rebuilt from the clean 1.2.9 commit using literal-safe patching to prevent PowerShell regex `# Changelog
+
+ text from being interpreted by the patching runtime.
+
 - Changed the authoritative call-end boundary from SIP/RVSIP `BYE`/`CANCEL` to IXM's own `<CMD>CALLENDED</CMD>`.
 - SIP/RVSIP `BYE` and `CANCEL` remain visible as signaling events but no longer finalize the IXM application call.
 - Fixes false early `CALL END` / `HUNG UP BEFORE RECORDING` results when IXM continues into recording and re-record cycles.
