@@ -89,7 +89,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:TraceIxmVersion = '1.2.4'
+$script:TraceIxmVersion = '1.2.5'
 
 $script:InteractiveMode = $false
 $script:InteractiveView = 'Summary'
@@ -494,6 +494,13 @@ function Get-ChannelState {
             MessageFile = ''
             IxMessageID = ''
             LastSavedTime = [datetime]::MinValue
+            MailboxReached = $false
+            RecordingStarted = $false
+            RecordingEnded = $false
+            MessageSaved = $false
+            SubscriberSession = $false
+            RecordingDurationSeconds = $null
+            LastCallResult = ''
             SensitiveInput = $false
             InputContext = ''
             LastDtmfBuffer = ''
@@ -645,27 +652,64 @@ function Complete-IxmPendingCallEnd {
         $EndDetail += ('  Reason={0}' -f $State.PendingEndReason)
     }
 
+    # High-confidence call classification based only on IX Messaging events
+    # observed for this call. Do not infer dead air or subjective audio quality.
+    $CallResult = ''
+    if ($State.SubscriberSession) {
+        $CallResult = 'SUBSCRIBER SESSION'
+    }
+    elseif ($State.MessageSaved) {
+        $CallResult = 'VOICEMAIL SAVED'
+    }
+    elseif ($State.RecordingStarted -and $State.RecordingEnded) {
+        $CallResult = 'RECORDING ENDED - NO MESSAGE SAVED'
+    }
+    elseif ($State.RecordingStarted) {
+        $CallResult = 'RECORDING STARTED - NO MESSAGE SAVED'
+    }
+    elseif ($State.MailboxReached) {
+        $CallResult = 'HUNG UP BEFORE RECORDING'
+    }
+    else {
+        $CallResult = 'CALL ENDED - OUTCOME UNKNOWN'
+    }
+
+    $ResultDetail = $CallResult
+    if ($State.Mailbox) {
+        $ResultDetail += ('  Mailbox={0}' -f $State.Mailbox)
+    }
+    if ($null -ne $State.RecordingDurationSeconds) {
+        $ResultDetail += ('  Recording={0} sec' -f $State.RecordingDurationSeconds)
+    }
+
+    $State.LastCallResult = $CallResult
+    $State.LastEvent = 'CALL RESULT'
+    Add-IxmCallPathItem -State $State -Item ('Result: {0}' -f $CallResult)
+
     $PathText = (@($State.CallPath) -join ' | ')
     $Source = if ($State.PendingEndSource) { $State.PendingEndSource } else { 'SIP' }
     $TimeText = if ($State.PendingEndText) { $State.PendingEndText } else { (Get-Date -Format 'HH:mm:ss.fff') }
     $Raw = [string]$State.PendingEndRaw
 
-    $EndEvent = New-TraceEvent -Source $Source -Time $TimeText -ChannelNumber $State.Channel \`
+    $EndEvent = New-TraceEvent -Source $Source -Time $TimeText -ChannelNumber $State.Channel `
         -Event 'CALL END' -Detail $EndDetail -Raw $Raw
+
+    $ResultEvent = New-TraceEvent -Source $Source -Time $TimeText -ChannelNumber $State.Channel `
+        -Event 'CALL RESULT' -Detail $ResultDetail -Raw $Raw
 
     $PathEvent = $null
     if (-not [string]::IsNullOrWhiteSpace($PathText)) {
-        $PathEvent = New-TraceEvent -Source $Source -Time $TimeText -ChannelNumber $State.Channel \`
+        $PathEvent = New-TraceEvent -Source $Source -Time $TimeText -ChannelNumber $State.Channel `
             -Event 'CALL PATH' -Detail $PathText -Raw $Raw
     }
 
     Reset-IxmCallState -State $State
 
     if ($Mode -eq 'Summary' -and $null -ne $PathEvent) {
-        return @($EndEvent,$PathEvent)
+        return @($EndEvent,$ResultEvent,$PathEvent)
     }
 
-    return $EndEvent
+    return @($EndEvent,$ResultEvent)
 }
 
 function Get-IxmCompletedPendingCallEnds {
@@ -701,6 +745,12 @@ function Reset-IxmCallState {
     $State.CurrentTuiState = ''
     $State.SensitiveInput = $false
     $State.InputContext = ''
+    $State.MailboxReached = $false
+    $State.RecordingStarted = $false
+    $State.RecordingEnded = $false
+    $State.MessageSaved = $false
+    $State.SubscriberSession = $false
+    $State.RecordingDurationSeconds = $null
     $State.PendingEnd = $false
     $State.PendingEndObserved = [datetime]::MinValue
     $State.PendingEndTime = [datetime]::MinValue
@@ -1374,6 +1424,23 @@ function Convert-IdmsLineToEvent {
         if ($Payload.Called) { $State.Called = $Payload.Called }
 
         if (-not $State.CallActive) {
+            # IXM reuses channels. Clear per-call mailbox/message state before
+            # starting the next call so an abandoned call cannot inherit the
+            # previous call's mailbox or saved-message evidence.
+            $State.Mailbox = ''
+            $State.MailboxID = ''
+            $State.CallID = ''
+            $State.MessageFile = ''
+            $State.IxMessageID = ''
+            $State.LastSavedTime = [datetime]::MinValue
+            $State.MailboxReached = $false
+            $State.RecordingStarted = $false
+            $State.RecordingEnded = $false
+            $State.MessageSaved = $false
+            $State.SubscriberSession = $false
+            $State.RecordingDurationSeconds = $null
+            $State.LastCallResult = ''
+
             $State.PendingEnd = $false
             $State.PendingEndObserved = [datetime]::MinValue
             $State.PendingEndTime = [datetime]::MinValue
@@ -1485,7 +1552,22 @@ function Convert-InMsgXmlToEvent {
         $State = Get-ChannelState -ChannelNumber $ChannelNumber
         if ($CallerID) { $State.CallerID = $CallerID }
         if ($CallerName) { $State.CallerName = $CallerName }
-        if ($MailboxID) { $State.MailboxID = $MailboxID }
+        if ($MailboxID) {
+            $State.MailboxID = $MailboxID
+            $State.MailboxReached = $true
+        }
+
+        if ($Command -eq 'INMSGSTART') {
+            $State.MailboxReached = $true
+            $State.RecordingStarted = $true
+            $State.RecordingEnded = $false
+        }
+        elseif ($Command -eq 'INMSGEND') {
+            $State.MailboxReached = $true
+            $State.RecordingStarted = $true
+            $State.RecordingEnded = $true
+        }
+
         $State.LastEvent = $Command
         $State.LastUpdate = Get-Date
     }
@@ -1624,6 +1706,7 @@ function Convert-LiveLineToEvents {
                 $State.LastUpdate = Get-Date
 
                 if ($Ret -eq 0) {
+                    $State.SubscriberSession = $true
                     $State.LastEvent = 'LOGIN OK'
                     $Detail = 'Subscriber mailbox login successful'
                     if ($State.Mailbox) { $Detail += ('  Mailbox={0}' -f $State.Mailbox) }
@@ -1765,6 +1848,7 @@ function Convert-LiveLineToEvents {
         # Mailbox correlation.
         if ($null -ne $State -and $Line -match 'Recording Menu (?:Mailbox|Mbx)\s+(?<Mailbox>\d+)') {
             $State.Mailbox = [string]$Matches.Mailbox
+            $State.MailboxReached = $true
             $State.LastUpdate = Get-Date
 
             $Extra = Get-MailboxDescription -Mailbox $State.Mailbox -MailboxID $State.MailboxID
@@ -1775,6 +1859,7 @@ function Convert-LiveLineToEvents {
         if ($null -ne $State -and $Line -match 'MbxNo\s*=\s*(?<Mailbox>\d+),\s*MbxID\s*=\s*(?<MailboxID>\d+)') {
             $State.Mailbox = [string]$Matches.Mailbox
             $State.MailboxID = [string]$Matches.MailboxID
+            $State.MailboxReached = $true
             $State.LastUpdate = Get-Date
 
             $Extra = Get-MailboxDescription -Mailbox $State.Mailbox -MailboxID $State.MailboxID
@@ -1813,6 +1898,10 @@ function Convert-LiveLineToEvents {
             if ($null -ne $State) {
                 $Extra = Get-MailboxDescription -Mailbox $State.Mailbox -MailboxID $State.MailboxID
                 $Detail = ('Mailbox={0}  Caller={1}{2}' -f $State.Mailbox,$State.CallerID,$Extra)
+                $State.MailboxReached = $true
+                $State.RecordingStarted = $true
+                $State.RecordingEnded = $true
+                $State.MessageSaved = $true
                 $State.LastEvent = 'VOICEMAIL SAVED'
                 $State.LastUpdate = Get-Date
                 $State.LastSavedTime = $State.LastUpdate
@@ -1924,6 +2013,10 @@ function Convert-LiveLineToEvents {
 
             if ($Trimmed -match '(?i)Actual Message Play Time\s*=\s*(?<Ms>\d+)\s+Millisecs') {
                 $Seconds = [math]::Round(([int64]$Matches.Ms / 1000.0),2)
+
+                if ($null -ne $State) {
+                    $State.RecordingDurationSeconds = $Seconds
+                }
 
                 return (New-TraceEvent -Source $Source -Time $Time -ChannelNumber $ChannelNumber `
                     -Event 'MESSAGE LENGTH' -Detail ('{0} sec' -f $Seconds) -Raw $Line)
@@ -2450,7 +2543,7 @@ function Show-IxmInteractiveScreen {
     switch ($script:InteractiveView) {
         'Calls' {
             Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f
-                'CH','CALLER','CALLED','MAILBOX','ACTIVE','LAST EVENT') -Color White
+                'CH','CALLER','CALLED','MAILBOX','ACTIVE','RESULT / LAST EVENT') -Color White
             Write-IxmUiLine -Text ('-' * ((Get-IxmConsoleWidth) - 1)) -Color DarkGray
 
             $States = @($script:ChannelStates.Values | Sort-Object Channel)
@@ -2460,8 +2553,15 @@ function Show-IxmInteractiveScreen {
             else {
                 $MaxRows = [math]::Max(1,$Height - 8)
                 foreach ($State in @($States | Select-Object -Last $MaxRows)) {
+                    $DisplayOutcome = if (-not $State.CallActive -and -not [string]::IsNullOrWhiteSpace($State.LastCallResult)) {
+                        $State.LastCallResult
+                    }
+                    else {
+                        $State.LastEvent
+                    }
+
                     Write-IxmUiLine -Text ('{0,-5} {1,-16} {2,-16} {3,-14} {4,-8} {5}' -f
-                        $State.Channel,$State.CallerID,$State.Called,$State.Mailbox,$State.CallActive,$State.LastEvent) -Color Gray
+                        $State.Channel,$State.CallerID,$State.Called,$State.Mailbox,$State.CallActive,$DisplayOutcome) -Color Gray
                 }
             }
         }
@@ -2739,8 +2839,666 @@ function Write-TraceEvent {
         '^MESSAGE ADD$'      { $Color = 'Cyan'; break }
         '^IDMS$'             { $Color = 'Magenta'; break }
         '^CALL START$'       { $Color = 'Green'; break }
-        '^CALL END$'         { $Color = 'Yellow'; break }
-        '^CALL PATH$'        { $Color = 'Cyan'; break }
+        '^CALL END        '^ROUTE$'            { $Color = 'Magenta'; break }
+        '^STATE$'            { $Color = 'Yellow'; break }
+        '^MWI$'              { $Color = 'DarkCyan'; break }
+        '^DTMF$'             { $Color = 'White'; break }
+        '^MENU$'             { $Color = 'Cyan'; break }
+        '^AUTH$'             { $Color = 'DarkYellow'; break }
+        '^LOGIN OK$'         { $Color = 'Green'; break }
+        '^LOGIN FAILED$'     { $Color = 'Red'; break }
+        '^MSG COUNT$'        { $Color = 'DarkCyan'; break }
+        '^EEAM PLAYTIME$'    { $Color = 'DarkGray'; break }
+        '^VOX LENGTH$'       { $Color = 'DarkGray'; break }
+        '^MESSAGE LENGTH$'   { $Color = 'Cyan'; break }
+        '^MSG INDEXED$'      { $Color = 'DarkCyan'; break }
+        '^SYNC STATUS$'      { $Color = 'DarkYellow'; break }
+        '^EXT SYNC OK$'      { $Color = 'Green'; break }
+        '^GRAPH$|^SMTP$'     { $Color = 'Green'; break }
+        '^GRAPH FAILED$|^SMTP FAILED$|^SYNC FAILED$' { $Color = 'Red'; break }
+        '^RECORDING$'        { $Color = 'DarkCyan'; break }
+        '^RAW$'              { $Color = 'DarkGray'; break }
+        default              { $Color = 'Gray' }
+    }
+
+    Write-Host $Line -ForegroundColor $Color
+
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+        try {
+            Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+        }
+        catch {
+            Write-Verbose ('Unable to append output file: {0}' -f $_.Exception.Message)
+        }
+    }
+}
+
+function Get-EnabledSources {
+    switch ($Mode) {
+        'Status'  { return @('STATUS') }
+        'Trace'   { return @('Trace') }
+        'SIP'     { return @('SIP','RVSIP') }
+        'DBCOM'   { return @('EEAMHELPER','TSECMGR') }
+        'All'     { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+        default   { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+    }
+}
+
+$ResolvedLogRoot = Resolve-IxmVServerLogRoot -Preferred $LogRoot
+
+$HasExplicitTraceArgs =
+    $PSBoundParameters.ContainsKey('Mode') -or
+    $PSBoundParameters.ContainsKey('Channel') -or
+    $PSBoundParameters.ContainsKey('Match') -or
+    $PSBoundParameters.ContainsKey('Extension') -or
+    $PSBoundParameters.ContainsKey('CallerID') -or
+    $PSBoundParameters.ContainsKey('Called') -or
+    $PSBoundParameters.ContainsKey('SipCallId') -or
+    $PSBoundParameters.ContainsKey('IpAddress') -or
+    $PSBoundParameters.ContainsKey('OutputPath')
+
+if ($Interactive) {
+    $script:InteractiveMode = $true
+}
+elseif ($NoInteractive) {
+    $script:InteractiveMode = $false
+}
+else {
+    $script:InteractiveMode = -not $HasExplicitTraceArgs
+}
+
+if ($script:InteractiveMode) {
+    Clear-Host
+    Write-Host ('traceIXM {0} - Avaya IX Messaging Interactive Trace' -f $script:TraceIxmVersion) -ForegroundColor Cyan
+    Write-Host 'Read-only live trace. Password/PIN digits are always hidden.' -ForegroundColor DarkGray
+    Write-Host ''
+    Show-IxmFilterMenu -Startup
+    Reset-IxmInteractiveCanvas
+}
+
+if (-not $script:InteractiveMode) {
+    Write-Section 'Avaya IX Messaging - Live Call Trace'
+    Write-Host ('Version      : {0}' -f $script:TraceIxmVersion)
+    Write-Host ('VServer logs : {0}' -f $ResolvedLogRoot)
+    Write-Host ('DBCOM logs   : {0}' -f (Join-Path (Split-Path -Parent $ResolvedLogRoot) 'DBCOM'))
+    Write-Host ('Mode         : {0}' -f $Mode)
+    Write-Host ('Filter       : {0}' -f (Get-IxmFilterDescription))
+
+    if ($Mode -eq 'Summary') {
+        Write-Host 'View         : correlated operator trace'
+    }
+    elseif ($Mode -eq 'Status') {
+        Write-Host 'View         : forensic/raw VServer status'
+    }
+
+    Write-Host ('Channel      : {0}' -f $(if ($Channel -gt 0) { $Channel } else { 'ALL' }))
+    Write-Host ('Match        : {0}' -f $(if ($Match) { $Match } else { '(none)' }))
+    Write-Host ('SQL enrich   : {0}' -f $(if ($SqlEnrichment) { 'YES - SELECT only' } else { 'NO' }))
+    Write-Host ('Poll         : {0} ms' -f $PollMilliseconds)
+    Write-Host 'Password DTMF: HIDDEN (always)'
+
+    if ($OutputPath) {
+        Write-Host ('Output file  : {0}' -f $OutputPath)
+    }
+}
+
+if ($SqlEnrichment) {
+    Import-IxmMailboxCache
+}
+
+$Sources = @(Get-EnabledSources)
+
+if (-not $script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'Active source files:' -ForegroundColor Cyan
+}
+
+foreach ($Source in $Sources) {
+    $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+
+    if ($Path) {
+        if (-not $script:InteractiveMode) {
+            Write-Host ('  {0,-11} {1}' -f $Source,$Path) -ForegroundColor DarkGray
+        }
+
+        # Initialize at EOF.
+        [void](Get-NewLogLines -Type $Source -Path $Path)
+    }
+    elseif (-not $script:InteractiveMode) {
+        Write-Host ('  {0,-11} (today''s file not present yet)' -f $Source) -ForegroundColor DarkGray
+    }
+}
+
+$script:InitialScanComplete = $true
+
+if ($script:InteractiveMode) {
+    Show-IxmInteractiveScreen -Force
+}
+else {
+    Write-Host ''
+    Write-Host 'Following new activity. Press Ctrl+C to stop.' -ForegroundColor Green
+    Write-Host ('{0,-12} {1,-7} {2,-7} {3,-18} {4}' -f 'TIME','SOURCE','CHANNEL','EVENT','DETAIL') -ForegroundColor White
+    Write-Host ('-' * 120) -ForegroundColor DarkGray
+}
+
+while (-not $script:QuitRequested) {
+    foreach ($Source in $Sources) {
+        try {
+            $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+            if (-not $Path) {
+                continue
+            }
+
+            $Lines = @(Get-NewLogLines -Type $Source -Path $Path)
+
+            foreach ($Line in $Lines) {
+                $Events = @(Convert-LiveLineToEvents -Source $Source -Line $Line)
+
+                foreach ($Event in $Events) {
+                    Add-IxmCapturedEvent -Event $Event
+                    [void](Add-IxmSummaryEvent -Event $Event)
+
+                    if (Test-TraceEventFilter -Event $Event) {
+                        if ($script:InteractiveMode) {
+                            $script:UiDirty = $true
+
+                            if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                                $Line = Format-IxmEventLine -Event $Event
+                                Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                            }
+                        }
+                        elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                            Write-TraceEvent -Event $Event
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            $ErrLine = $_.InvocationInfo.ScriptLineNumber
+            $ErrText = $_.InvocationInfo.Line
+            if ($ErrText) { $ErrText = $ErrText.Trim() }
+
+            Write-Host (
+                '[{0}] {1}: {2}  [line {3}: {4}]' -f
+                (Get-Date -Format 'HH:mm:ss'),
+                $Source,
+                $_.Exception.Message,
+                $ErrLine,
+                $ErrText
+            ) -ForegroundColor Red
+        }
+    }
+
+    $CompletedEndEvents = @(Get-IxmCompletedPendingCallEnds)
+    foreach ($Event in $CompletedEndEvents) {
+        Add-IxmCapturedEvent -Event $Event
+        [void](Add-IxmSummaryEvent -Event $Event)
+
+        if (Test-TraceEventFilter -Event $Event) {
+            if ($script:InteractiveMode) {
+                $script:UiDirty = $true
+
+                if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                    $Line = Format-IxmEventLine -Event $Event
+                    Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                }
+            }
+            elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                Write-TraceEvent -Event $Event
+            }
+        }
+    }
+
+    Invoke-IxmInteractiveKeys
+    Show-IxmInteractiveScreen
+    Start-Sleep -Milliseconds $PollMilliseconds
+}
+
+if ($script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'traceIXM stopped.' -ForegroundColor Yellow
+}         { $Color = 'Yellow'; break }
+        '^CALL RESULT        '^ROUTE$'            { $Color = 'Magenta'; break }
+        '^STATE$'            { $Color = 'Yellow'; break }
+        '^MWI$'              { $Color = 'DarkCyan'; break }
+        '^DTMF$'             { $Color = 'White'; break }
+        '^MENU$'             { $Color = 'Cyan'; break }
+        '^AUTH$'             { $Color = 'DarkYellow'; break }
+        '^LOGIN OK$'         { $Color = 'Green'; break }
+        '^LOGIN FAILED$'     { $Color = 'Red'; break }
+        '^MSG COUNT$'        { $Color = 'DarkCyan'; break }
+        '^EEAM PLAYTIME$'    { $Color = 'DarkGray'; break }
+        '^VOX LENGTH$'       { $Color = 'DarkGray'; break }
+        '^MESSAGE LENGTH$'   { $Color = 'Cyan'; break }
+        '^MSG INDEXED$'      { $Color = 'DarkCyan'; break }
+        '^SYNC STATUS$'      { $Color = 'DarkYellow'; break }
+        '^EXT SYNC OK$'      { $Color = 'Green'; break }
+        '^GRAPH$|^SMTP$'     { $Color = 'Green'; break }
+        '^GRAPH FAILED$|^SMTP FAILED$|^SYNC FAILED$' { $Color = 'Red'; break }
+        '^RECORDING$'        { $Color = 'DarkCyan'; break }
+        '^RAW$'              { $Color = 'DarkGray'; break }
+        default              { $Color = 'Gray' }
+    }
+
+    Write-Host $Line -ForegroundColor $Color
+
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+        try {
+            Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+        }
+        catch {
+            Write-Verbose ('Unable to append output file: {0}' -f $_.Exception.Message)
+        }
+    }
+}
+
+function Get-EnabledSources {
+    switch ($Mode) {
+        'Status'  { return @('STATUS') }
+        'Trace'   { return @('Trace') }
+        'SIP'     { return @('SIP','RVSIP') }
+        'DBCOM'   { return @('EEAMHELPER','TSECMGR') }
+        'All'     { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+        default   { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+    }
+}
+
+$ResolvedLogRoot = Resolve-IxmVServerLogRoot -Preferred $LogRoot
+
+$HasExplicitTraceArgs =
+    $PSBoundParameters.ContainsKey('Mode') -or
+    $PSBoundParameters.ContainsKey('Channel') -or
+    $PSBoundParameters.ContainsKey('Match') -or
+    $PSBoundParameters.ContainsKey('Extension') -or
+    $PSBoundParameters.ContainsKey('CallerID') -or
+    $PSBoundParameters.ContainsKey('Called') -or
+    $PSBoundParameters.ContainsKey('SipCallId') -or
+    $PSBoundParameters.ContainsKey('IpAddress') -or
+    $PSBoundParameters.ContainsKey('OutputPath')
+
+if ($Interactive) {
+    $script:InteractiveMode = $true
+}
+elseif ($NoInteractive) {
+    $script:InteractiveMode = $false
+}
+else {
+    $script:InteractiveMode = -not $HasExplicitTraceArgs
+}
+
+if ($script:InteractiveMode) {
+    Clear-Host
+    Write-Host ('traceIXM {0} - Avaya IX Messaging Interactive Trace' -f $script:TraceIxmVersion) -ForegroundColor Cyan
+    Write-Host 'Read-only live trace. Password/PIN digits are always hidden.' -ForegroundColor DarkGray
+    Write-Host ''
+    Show-IxmFilterMenu -Startup
+    Reset-IxmInteractiveCanvas
+}
+
+if (-not $script:InteractiveMode) {
+    Write-Section 'Avaya IX Messaging - Live Call Trace'
+    Write-Host ('Version      : {0}' -f $script:TraceIxmVersion)
+    Write-Host ('VServer logs : {0}' -f $ResolvedLogRoot)
+    Write-Host ('DBCOM logs   : {0}' -f (Join-Path (Split-Path -Parent $ResolvedLogRoot) 'DBCOM'))
+    Write-Host ('Mode         : {0}' -f $Mode)
+    Write-Host ('Filter       : {0}' -f (Get-IxmFilterDescription))
+
+    if ($Mode -eq 'Summary') {
+        Write-Host 'View         : correlated operator trace'
+    }
+    elseif ($Mode -eq 'Status') {
+        Write-Host 'View         : forensic/raw VServer status'
+    }
+
+    Write-Host ('Channel      : {0}' -f $(if ($Channel -gt 0) { $Channel } else { 'ALL' }))
+    Write-Host ('Match        : {0}' -f $(if ($Match) { $Match } else { '(none)' }))
+    Write-Host ('SQL enrich   : {0}' -f $(if ($SqlEnrichment) { 'YES - SELECT only' } else { 'NO' }))
+    Write-Host ('Poll         : {0} ms' -f $PollMilliseconds)
+    Write-Host 'Password DTMF: HIDDEN (always)'
+
+    if ($OutputPath) {
+        Write-Host ('Output file  : {0}' -f $OutputPath)
+    }
+}
+
+if ($SqlEnrichment) {
+    Import-IxmMailboxCache
+}
+
+$Sources = @(Get-EnabledSources)
+
+if (-not $script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'Active source files:' -ForegroundColor Cyan
+}
+
+foreach ($Source in $Sources) {
+    $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+
+    if ($Path) {
+        if (-not $script:InteractiveMode) {
+            Write-Host ('  {0,-11} {1}' -f $Source,$Path) -ForegroundColor DarkGray
+        }
+
+        # Initialize at EOF.
+        [void](Get-NewLogLines -Type $Source -Path $Path)
+    }
+    elseif (-not $script:InteractiveMode) {
+        Write-Host ('  {0,-11} (today''s file not present yet)' -f $Source) -ForegroundColor DarkGray
+    }
+}
+
+$script:InitialScanComplete = $true
+
+if ($script:InteractiveMode) {
+    Show-IxmInteractiveScreen -Force
+}
+else {
+    Write-Host ''
+    Write-Host 'Following new activity. Press Ctrl+C to stop.' -ForegroundColor Green
+    Write-Host ('{0,-12} {1,-7} {2,-7} {3,-18} {4}' -f 'TIME','SOURCE','CHANNEL','EVENT','DETAIL') -ForegroundColor White
+    Write-Host ('-' * 120) -ForegroundColor DarkGray
+}
+
+while (-not $script:QuitRequested) {
+    foreach ($Source in $Sources) {
+        try {
+            $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+            if (-not $Path) {
+                continue
+            }
+
+            $Lines = @(Get-NewLogLines -Type $Source -Path $Path)
+
+            foreach ($Line in $Lines) {
+                $Events = @(Convert-LiveLineToEvents -Source $Source -Line $Line)
+
+                foreach ($Event in $Events) {
+                    Add-IxmCapturedEvent -Event $Event
+                    [void](Add-IxmSummaryEvent -Event $Event)
+
+                    if (Test-TraceEventFilter -Event $Event) {
+                        if ($script:InteractiveMode) {
+                            $script:UiDirty = $true
+
+                            if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                                $Line = Format-IxmEventLine -Event $Event
+                                Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                            }
+                        }
+                        elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                            Write-TraceEvent -Event $Event
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            $ErrLine = $_.InvocationInfo.ScriptLineNumber
+            $ErrText = $_.InvocationInfo.Line
+            if ($ErrText) { $ErrText = $ErrText.Trim() }
+
+            Write-Host (
+                '[{0}] {1}: {2}  [line {3}: {4}]' -f
+                (Get-Date -Format 'HH:mm:ss'),
+                $Source,
+                $_.Exception.Message,
+                $ErrLine,
+                $ErrText
+            ) -ForegroundColor Red
+        }
+    }
+
+    $CompletedEndEvents = @(Get-IxmCompletedPendingCallEnds)
+    foreach ($Event in $CompletedEndEvents) {
+        Add-IxmCapturedEvent -Event $Event
+        [void](Add-IxmSummaryEvent -Event $Event)
+
+        if (Test-TraceEventFilter -Event $Event) {
+            if ($script:InteractiveMode) {
+                $script:UiDirty = $true
+
+                if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                    $Line = Format-IxmEventLine -Event $Event
+                    Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                }
+            }
+            elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                Write-TraceEvent -Event $Event
+            }
+        }
+    }
+
+    Invoke-IxmInteractiveKeys
+    Show-IxmInteractiveScreen
+    Start-Sleep -Milliseconds $PollMilliseconds
+}
+
+if ($script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'traceIXM stopped.' -ForegroundColor Yellow
+}      { $Color = 'Cyan'; break }
+        '^CALL PATH        '^ROUTE$'            { $Color = 'Magenta'; break }
+        '^STATE$'            { $Color = 'Yellow'; break }
+        '^MWI$'              { $Color = 'DarkCyan'; break }
+        '^DTMF$'             { $Color = 'White'; break }
+        '^MENU$'             { $Color = 'Cyan'; break }
+        '^AUTH$'             { $Color = 'DarkYellow'; break }
+        '^LOGIN OK$'         { $Color = 'Green'; break }
+        '^LOGIN FAILED$'     { $Color = 'Red'; break }
+        '^MSG COUNT$'        { $Color = 'DarkCyan'; break }
+        '^EEAM PLAYTIME$'    { $Color = 'DarkGray'; break }
+        '^VOX LENGTH$'       { $Color = 'DarkGray'; break }
+        '^MESSAGE LENGTH$'   { $Color = 'Cyan'; break }
+        '^MSG INDEXED$'      { $Color = 'DarkCyan'; break }
+        '^SYNC STATUS$'      { $Color = 'DarkYellow'; break }
+        '^EXT SYNC OK$'      { $Color = 'Green'; break }
+        '^GRAPH$|^SMTP$'     { $Color = 'Green'; break }
+        '^GRAPH FAILED$|^SMTP FAILED$|^SYNC FAILED$' { $Color = 'Red'; break }
+        '^RECORDING$'        { $Color = 'DarkCyan'; break }
+        '^RAW$'              { $Color = 'DarkGray'; break }
+        default              { $Color = 'Gray' }
+    }
+
+    Write-Host $Line -ForegroundColor $Color
+
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+        try {
+            Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+        }
+        catch {
+            Write-Verbose ('Unable to append output file: {0}' -f $_.Exception.Message)
+        }
+    }
+}
+
+function Get-EnabledSources {
+    switch ($Mode) {
+        'Status'  { return @('STATUS') }
+        'Trace'   { return @('Trace') }
+        'SIP'     { return @('SIP','RVSIP') }
+        'DBCOM'   { return @('EEAMHELPER','TSECMGR') }
+        'All'     { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+        default   { return @('STATUS','Trace','SIP','RVSIP','EEAMHELPER','TSECMGR') }
+    }
+}
+
+$ResolvedLogRoot = Resolve-IxmVServerLogRoot -Preferred $LogRoot
+
+$HasExplicitTraceArgs =
+    $PSBoundParameters.ContainsKey('Mode') -or
+    $PSBoundParameters.ContainsKey('Channel') -or
+    $PSBoundParameters.ContainsKey('Match') -or
+    $PSBoundParameters.ContainsKey('Extension') -or
+    $PSBoundParameters.ContainsKey('CallerID') -or
+    $PSBoundParameters.ContainsKey('Called') -or
+    $PSBoundParameters.ContainsKey('SipCallId') -or
+    $PSBoundParameters.ContainsKey('IpAddress') -or
+    $PSBoundParameters.ContainsKey('OutputPath')
+
+if ($Interactive) {
+    $script:InteractiveMode = $true
+}
+elseif ($NoInteractive) {
+    $script:InteractiveMode = $false
+}
+else {
+    $script:InteractiveMode = -not $HasExplicitTraceArgs
+}
+
+if ($script:InteractiveMode) {
+    Clear-Host
+    Write-Host ('traceIXM {0} - Avaya IX Messaging Interactive Trace' -f $script:TraceIxmVersion) -ForegroundColor Cyan
+    Write-Host 'Read-only live trace. Password/PIN digits are always hidden.' -ForegroundColor DarkGray
+    Write-Host ''
+    Show-IxmFilterMenu -Startup
+    Reset-IxmInteractiveCanvas
+}
+
+if (-not $script:InteractiveMode) {
+    Write-Section 'Avaya IX Messaging - Live Call Trace'
+    Write-Host ('Version      : {0}' -f $script:TraceIxmVersion)
+    Write-Host ('VServer logs : {0}' -f $ResolvedLogRoot)
+    Write-Host ('DBCOM logs   : {0}' -f (Join-Path (Split-Path -Parent $ResolvedLogRoot) 'DBCOM'))
+    Write-Host ('Mode         : {0}' -f $Mode)
+    Write-Host ('Filter       : {0}' -f (Get-IxmFilterDescription))
+
+    if ($Mode -eq 'Summary') {
+        Write-Host 'View         : correlated operator trace'
+    }
+    elseif ($Mode -eq 'Status') {
+        Write-Host 'View         : forensic/raw VServer status'
+    }
+
+    Write-Host ('Channel      : {0}' -f $(if ($Channel -gt 0) { $Channel } else { 'ALL' }))
+    Write-Host ('Match        : {0}' -f $(if ($Match) { $Match } else { '(none)' }))
+    Write-Host ('SQL enrich   : {0}' -f $(if ($SqlEnrichment) { 'YES - SELECT only' } else { 'NO' }))
+    Write-Host ('Poll         : {0} ms' -f $PollMilliseconds)
+    Write-Host 'Password DTMF: HIDDEN (always)'
+
+    if ($OutputPath) {
+        Write-Host ('Output file  : {0}' -f $OutputPath)
+    }
+}
+
+if ($SqlEnrichment) {
+    Import-IxmMailboxCache
+}
+
+$Sources = @(Get-EnabledSources)
+
+if (-not $script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'Active source files:' -ForegroundColor Cyan
+}
+
+foreach ($Source in $Sources) {
+    $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+
+    if ($Path) {
+        if (-not $script:InteractiveMode) {
+            Write-Host ('  {0,-11} {1}' -f $Source,$Path) -ForegroundColor DarkGray
+        }
+
+        # Initialize at EOF.
+        [void](Get-NewLogLines -Type $Source -Path $Path)
+    }
+    elseif (-not $script:InteractiveMode) {
+        Write-Host ('  {0,-11} (today''s file not present yet)' -f $Source) -ForegroundColor DarkGray
+    }
+}
+
+$script:InitialScanComplete = $true
+
+if ($script:InteractiveMode) {
+    Show-IxmInteractiveScreen -Force
+}
+else {
+    Write-Host ''
+    Write-Host 'Following new activity. Press Ctrl+C to stop.' -ForegroundColor Green
+    Write-Host ('{0,-12} {1,-7} {2,-7} {3,-18} {4}' -f 'TIME','SOURCE','CHANNEL','EVENT','DETAIL') -ForegroundColor White
+    Write-Host ('-' * 120) -ForegroundColor DarkGray
+}
+
+while (-not $script:QuitRequested) {
+    foreach ($Source in $Sources) {
+        try {
+            $Path = Get-LiveLogPath -Root $ResolvedLogRoot -Type $Source
+            if (-not $Path) {
+                continue
+            }
+
+            $Lines = @(Get-NewLogLines -Type $Source -Path $Path)
+
+            foreach ($Line in $Lines) {
+                $Events = @(Convert-LiveLineToEvents -Source $Source -Line $Line)
+
+                foreach ($Event in $Events) {
+                    Add-IxmCapturedEvent -Event $Event
+                    [void](Add-IxmSummaryEvent -Event $Event)
+
+                    if (Test-TraceEventFilter -Event $Event) {
+                        if ($script:InteractiveMode) {
+                            $script:UiDirty = $true
+
+                            if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                                $Line = Format-IxmEventLine -Event $Event
+                                Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                            }
+                        }
+                        elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                            Write-TraceEvent -Event $Event
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            $ErrLine = $_.InvocationInfo.ScriptLineNumber
+            $ErrText = $_.InvocationInfo.Line
+            if ($ErrText) { $ErrText = $ErrText.Trim() }
+
+            Write-Host (
+                '[{0}] {1}: {2}  [line {3}: {4}]' -f
+                (Get-Date -Format 'HH:mm:ss'),
+                $Source,
+                $_.Exception.Message,
+                $ErrLine,
+                $ErrText
+            ) -ForegroundColor Red
+        }
+    }
+
+    $CompletedEndEvents = @(Get-IxmCompletedPendingCallEnds)
+    foreach ($Event in $CompletedEndEvents) {
+        Add-IxmCapturedEvent -Event $Event
+        [void](Add-IxmSummaryEvent -Event $Event)
+
+        if (Test-TraceEventFilter -Event $Event) {
+            if ($script:InteractiveMode) {
+                $script:UiDirty = $true
+
+                if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+                    $Line = Format-IxmEventLine -Event $Event
+                    Add-Content -LiteralPath $OutputPath -Value $Line -Encoding UTF8
+                }
+            }
+            elseif (Test-IxmViewAllowsEvent -Event $Event) {
+                Write-TraceEvent -Event $Event
+            }
+        }
+    }
+
+    Invoke-IxmInteractiveKeys
+    Show-IxmInteractiveScreen
+    Start-Sleep -Milliseconds $PollMilliseconds
+}
+
+if ($script:InteractiveMode) {
+    Write-Host ''
+    Write-Host 'traceIXM stopped.' -ForegroundColor Yellow
+}        { $Color = 'Cyan'; break }
         '^ROUTE$'            { $Color = 'Magenta'; break }
         '^STATE$'            { $Color = 'Yellow'; break }
         '^MWI$'              { $Color = 'DarkCyan'; break }
