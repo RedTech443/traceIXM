@@ -8,7 +8,7 @@ It follows active IX Messaging Voice Server and DBCOM logs and correlates them i
 
 ## Current version
 
-**1.2.9**
+**1.3.0**
 
 PowerShell **5.1+**.
 
@@ -382,3 +382,10 @@ Then replace the Windows copy of `traceIXM.ps1` with the updated file.
 ## Version history
 
 See [CHANGELOG.md](CHANGELOG.md).
+
+
+### Authoritative call end
+
+Starting with 1.3.0, SIP/RVSIP `BYE` and `CANCEL` are signaling evidence only and do not finalize the IX Messaging channel session. Final `CALL END` / `CALL RESULT` is driven by IXM's own `<CMD>CALLENDED</CMD>` event. This prevents a SIP leg from causing an early false call result while IXM continues through greeting, recording, or re-recording.
+
+In interactive mode, press `C` to clear the displayed/captured event history. The current filter and active channel state are preserved so in-progress calls continue to correlate correctly. The Calls view remains available with `3`.
